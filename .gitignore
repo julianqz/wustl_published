@@ -1,0 +1,6 @@
+*.html
+*.pyc
+*.Rhistory
+.DS_Store
+*/.ipynb_checkpoints/*
+
