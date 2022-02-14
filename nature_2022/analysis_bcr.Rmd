@@ -1,0 +1,1420 @@
+---
+title: "Kim & Zhou et al., *Nature*, 2022 (repertoire)"
+output: html_notebook
+---
+
+Author: Julian Q. Zhou
+
+Docker container: `julianqz/wu_pub:r_4.1.0`
+
+Visualizations are outputted as pdfs or pngs.
+
+Minor differences in terminology
+
+* Memory B cell compartment: `MBC` in paper; `RMB` in data
+* Bone marrow plasma cell: `BMPC` in paper; `LLPC` in data
+
+# Load packages & helper functions
+
+```{r}
+# summarize_clone
+source("./c2b2/bcr_clone_info.R")
+
+# circos_clonal_overlap
+source("./c2b2/bcr_clonal_overlap_circos.R")
+
+# prep_for_alluv, prep_for_paired_mf, get_stat_paired_mf
+source("./c2b2/bcr_alluvial.R")
+
+# vioplotLst
+source("./c2b2/vis_vioplot.R")
+
+# tabulate_vj
+source("./c2b2/bcr_vj.R")
+
+# barplot_2
+source("./c2b2/vis_barplot.R")
+```
+
+```{r}
+library(tibble)
+library(ggplot2)
+
+library(ape)
+library(ggtree) 
+```
+
+```{r}
+versions::installed.versions(c("ggplot2", "circlize", "ape", "ggtree", "vioplot", "alakazam"))
+```
+
+
+# Setup
+
+```{r}
+### filenames
+fn_db = "WU368_kim_et_al_nature_2022_bcr_heavy.tsv.gz"
+fn_umap = "gex_b_cells_umap_anno.tsv.gz"
+
+### column names
+
+col_comp = "compartment"
+
+# same as $timepoint, except d28+d35 and d201+d208 are treated as d28 and d201 resp.
+col_tp_2 = "timepoint_2"
+
+# [compartment]_[timepoint_2]
+col_comp_tp_2 = "compartment_timepoint_2"
+# variant of the above
+col_comp_tp_2_var = "compartment_timepoint_2_var"
+
+col_clone_id = "clone_id"
+# TRUE if a clonal member of a S+ heavy chain-based B cell clone
+col_s_pos_clone = "s_pos_clone"
+
+# TRUE if d201 bulk-sequenced memory sort from blood
+col_mem = "bloodMemoryBulk_d201"
+
+# transcriptomics-based cluster annotation
+col_anno = "anno_leiden_0.18"
+
+# replacement and silent mutation frequency
+col_mf = "nuc_RS_freq_19_312"
+
+col_seq_id = "sequence_id"
+col_iso = "isotype"
+col_donor = "donor"
+
+### 8 participants
+DONORS = paste0("368-", c("01a","02a","04","07","10","13","20","22"))
+```
+
+
+# Load BCR data
+
+```{r}
+# db_all contains heavy chains from all clones regardless of S specificity
+db_all_zz = gzfile(fn_db,'rt')
+db_all = read.table(db_all_zz, header=T, sep="\t", stringsAsFactors=F)
+close(db_all_zz)
+
+# Subset to S+ clones
+db = db_all[db_all[[col_s_pos_clone]], ]
+rm(db_all)
+```
+
+```{r}
+# Recalculate SHM frequency to avoid numerical problems affecting $nuc_RS_freq_19_312
+# that arise from writing and reading tsv's
+
+# E.g. a "0.013108614" could become "0.013108615" after being exported and read back in
+
+# Doing so ensures that the exact p-values reported in the paper can be reproduced
+db[[col_mf]] = db[["nuc_RS_19_312"]] / db[["nuc_denom_19_312"]]
+```
+
+```{r}
+# Restrict memory compartment analysis to d201 bulk-sequenced memory sorts from blood
+
+# This is necessary because `RMB` (referred to as MBC in the paper) in $compartment 
+# has a broader coverage (such as 10x sequences annoatated as RMB based on gene expression)
+
+# Not necessary to specify `db[["tissue"]]=="blood"` because the experimental setup
+# was such that all d201 bulk-sequenced memory sorts were from blood
+
+# TRUE if d201 bulk-sequenced memory sorts from blood
+db[[col_mem]] = db[[col_comp]]=="RMB" & db[[col_tp_2]]=="d201" & db[["seq_type"]]=="bulk"
+```
+
+```{r}
+# Create a [compartment]_[timepoint_2] column
+db[[col_comp_tp_2]] = paste0(db[[col_comp]], "_", db[[col_tp_2]])
+
+# Create a variant of the [compartment]_[timepoint_2] column which would allow
+# convenient subsetting to the sequences to be used for memory compartment analysis
+# via `bloodMemoryBulk_d201`
+db[[col_comp_tp_2_var]] = db[[col_comp_tp_2]]
+db[[col_comp_tp_2_var]][db[[col_mem]]] = col_mem
+```
+
+
+# Clone-level summary
+
+First, we create a `data.frame` in which each row represents a clone, and columns
+tabulate the number of sequences in a compartment and in a compartment-timepoint
+combination.
+
+```{r}
+clone_info = summarize_clone(db=db, col_clone=col_clone_id, 
+                             col_vec=c(col_comp, col_comp_tp_2, col_mem),
+                             order_by_size="none")
+
+# `summarize_clone` creates $bloodMemoryBulk_d201_TRUE and $bloodMemoryBulk_d201_FALSE
+# Only care about the counts in $bloodMemoryBulk_d201_TRUE
+# Rename $bloodMemoryBulk_d201_TRUE to simply $bloodMemoryBulk and delete the rest
+# This tells the number of sequences per clone for the MBC analysis
+clone_info[[col_mem]] = clone_info[["bloodMemoryBulk_d201_TRUE"]]
+clone_info[["bloodMemoryBulk_d201_TRUE"]] = NULL
+clone_info[["bloodMemoryBulk_d201_FALSE"]] = NULL
+
+# Extract participant ID from clone ID, which has the format [donor]@[clone]
+clone_info[[col_donor]] = sapply(clone_info[[col_clone_id]],
+                                 function(s){strsplit(s, "@")[[1]][1]})
+```
+
+
+# Circos plots for clonal overlap
+
+* Fig 3a
+* Fig 3d
+* Extended Data Fig 3a
+* Extended Data Fig 3b
+
+`circos_clonal_overlap` produces a circos plot, and prints out (i) the number and
+percentage of clones with clonal overlap, and (ii) the number of sequences.
+
+Starting with the arc at the 12 o'clock position and going clockwise, the identities of 
+the arcs correspond to the rows in the printed table from top to bottom.
+
+### How to read the circos plots
+
+* An arc represents BCR sequences from a B cell compartment or 
+compartment-timepoint combination
+* The length of an arc length corresponds to the number of BCR sequences 
+represented by the arc
+* Chords connect clonally related sequences
+* The width of a chord width corresponds to the size of the size represented 
+by the chord
+* Chords are coloured based on whether there's "overlap"
+* Overlap can be defined as overlap between compartments, between 
+compartment-timepoint combinations, etc.
+
+### Fig 3a - clonal overlap between PB and GC B cell
+
+```{r}
+# arcs
+vec_sectors_gc_pb_tp = c("PB_d28", "GC_d28", "GC_d35", "GC_d60", "GC_d110")
+# compartment of each arc
+vec_sectors_type_gc_pb_tp = c("PB", "GC", "GC", "GC", "GC")
+# colour of each arc
+vec_sectors_color_gc_pb_tp = c("firebrick2", "dodgerblue2", "dodgerblue2", "dodgerblue2", "dodgerblue2")
+
+# width of gaps between arcs
+vec_gaps_gc_pb_tp = rep(7, length(vec_sectors_gc_pb_tp))
+# definition of overlap (i.e. between PB and GC B cell)
+vec_overlap_types_gc_pb_tp = c("PB", "GC")
+# column in sequence data.frame that contains arc labels
+col_sector_gc_pb_tp = col_comp_tp_2
+# colour of chord when there's overlap
+color_overlap_gc_pb_tp = "purple"
+# colour of chord when there's no overlap 
+color_no_overlap_gc_pb_tp = "gray40"
+
+for (d in DONORS) {
+    cat("\n", d, "\n")
+    
+    # subset to current donor
+    d_db = db[db[[col_donor]]==d, ]
+    d_clone_info = clone_info[clone_info[[col_clone_id]] %in% d_db[[col_clone_id]], ]
+    
+    d_fn = paste0("fig_3a_", d, ".pdf")
+    pdf(d_fn, width=5, height=5)
+    
+    circos_clonal_overlap(vec_sectors=vec_sectors_gc_pb_tp, 
+                          vec_sectors_type=vec_sectors_type_gc_pb_tp, 
+                          vec_sectors_color=vec_sectors_color_gc_pb_tp, 
+                          vec_gaps=vec_gaps_gc_pb_tp,  
+                          vec_overlap_types=vec_overlap_types_gc_pb_tp,
+                          col_sector=col_sector_gc_pb_tp, 
+                          col_clone_id=col_clone_id, 
+                          df_seq_data=d_db, 
+                          df_clone_info=d_clone_info, 
+                          color_overlap=color_overlap_gc_pb_tp, 
+                          color_no_overlap=color_no_overlap_gc_pb_tp)
+    
+    dev.off()
+}
+```
+
+
+### Fig 3d - clonal overlap between LNPC and GC B cell
+
+*In the published version, the circos plots from below were flipped horizontally 
+in Adobe Illustrator.*
+
+```{r}
+# arcs
+vec_sectors_gc_lnpc_no_tp = c("GC", "LNPC")
+# compartment of each arc
+vec_sectors_type_gc_lnpc_no_tp = c("GC", "LNPC")
+# colour of each arc
+vec_sectors_color_gc_lnpc_no_tp = c("dodgerblue2", "forestgreen")
+
+# width of gaps between arcs
+vec_gaps_gc_lnpc_no_tp = c(10, 10)
+# definition of overlap (i.e. between LNPC and GC B cell)
+vec_overlap_types_gc_lnpc_no_tp = c("GC", "LNPC")
+# column in sequence data.frame that contains arc labels
+col_sector_gc_lnpc_no_tp = col_comp
+# colour of chord when there's overlap
+color_overlap_gc_lnpc_no_tp = "purple"
+# colour of chord when there's no overlap 
+color_no_overlap_gc_lnpc_no_tp = "gray40"
+
+for (d in DONORS) {
+    cat("\n", d, "\n")
+    
+    # subset to current donor
+    d_db = db[db[[col_donor]]==d, ]
+    d_clone_info = clone_info[clone_info[[col_clone_id]] %in% d_db[[col_clone_id]], ]
+    
+    # exclude d201 because not all participants had d201 lymph node FNA samples
+    d_db = d_db[!d_db[[col_comp_tp_2]] %in% c("GC_d201", "LNPC_d201"), ]
+    d_clone_info[["GC"]] = d_clone_info[["GC"]]-d_clone_info[["GC_d201"]]
+    d_clone_info[["LNPC"]] = d_clone_info[["LNPC"]]-d_clone_info[["LNPC_d201"]]
+    stopifnot(all(d_clone_info[["GC"]]>=0))
+    stopifnot(all(d_clone_info[["LNPC"]]>=0))
+    
+    d_fn = paste0("fig_3d_", d, ".pdf")
+    pdf(d_fn, width=5, height=5)
+    
+    circos_clonal_overlap(vec_sectors=vec_sectors_gc_lnpc_no_tp, 
+                          vec_sectors_type=vec_sectors_type_gc_lnpc_no_tp, 
+                          vec_sectors_color=vec_sectors_color_gc_lnpc_no_tp, 
+                          vec_gaps=vec_gaps_gc_lnpc_no_tp,  
+                          vec_overlap_types=vec_overlap_types_gc_lnpc_no_tp, 
+                          col_sector=col_sector_gc_lnpc_no_tp, 
+                          col_clone_id=col_clone_id, 
+                          df_seq_data=d_db, 
+                          df_clone_info=d_clone_info, 
+                          color_overlap=color_overlap_gc_lnpc_no_tp, 
+                          color_no_overlap=color_no_overlap_gc_lnpc_no_tp)
+    
+    dev.off()
+}
+```
+
+### Extended Data Fig 3a - clonal overlap between different timepoints of GC B cell
+
+```{r}
+# arcs
+vec_sectors_gc_tp = c("GC_d28", "GC_d35", "GC_d60", "GC_d110", "GC_d201")
+# "type" of each arc
+# Here, we want to visualize overlap between GC B cell at d201 and 
+# GC B cell at prior timepoints
+# Later, we'll artificially create artificial labels which designate 
+# GC_d201 as GC_2 and other GC B cell timepoints as GC_1
+vec_sectors_type_gc_tp = c("GC_1", "GC_1", "GC_1", "GC_1", "GC_2")
+# colour of each arc
+vec_sectors_color_gc_tp = c("dodgerblue2", "dodgerblue2", "dodgerblue2", "dodgerblue2", "dodgerblue2")
+
+# width of gaps between arcs
+vec_gaps_gc_tp = rep(7, length(vec_sectors_gc_tp))
+# definition of overlap (i.e. between GC_1 and GC_2)
+vec_overlap_types_gc_tp = c("GC_1", "GC_2")
+# column in sequence data.frame that contains arc labels
+col_sector_gc_tp = col_comp_tp_2
+# colour of chord when there's overlap
+color_overlap_gc_tp = "purple"
+# colour of chord when there's no overlap
+color_no_overlap_gc_tp = "gray40"
+
+# Only visualizing for participants who has d201 lymph node FNA samples
+for (d in paste0("368-", c("01a","07","10","20"))) {
+    cat("\n", d, "\n")
+    
+    # subset to current donor
+    d_db = db[db[[col_donor]]==d, ]
+    d_clone_info = clone_info[clone_info[[col_clone_id]] %in% d_db[[col_clone_id]], ]
+    
+    # create on the fly columns GC_1 and GC_2 for circos_clonal_overlap to work with
+    # used for determining overlap and coloring
+    d_clone_info[["GC_2"]] = d_clone_info[["GC_d201"]]
+    d_clone_info[["GC_1"]] = rowSums(d_clone_info[, paste0("GC_d", c(28,35,60,110))])
+    
+    d_fn = paste0("ed_fig_3a_", d, ".pdf")
+    pdf(d_fn, width=5, height=5)
+    
+    circos_clonal_overlap(vec_sectors=vec_sectors_gc_tp, 
+                          vec_sectors_type=vec_sectors_type_gc_tp, 
+                          vec_sectors_color=vec_sectors_color_gc_tp, 
+                          vec_gaps=vec_gaps_gc_tp,  
+                          vec_overlap_types=vec_overlap_types_gc_tp,
+                          col_sector=col_sector_gc_tp, 
+                          col_clone_id=col_clone_id, 
+                          df_seq_data=d_db, 
+                          df_clone_info=d_clone_info, 
+                          color_overlap=color_overlap_gc_tp, 
+                          color_no_overlap=color_no_overlap_gc_tp)
+    
+    dev.off()
+}
+```
+
+### Extended Data Fig 3b - clonal overlap between MBC and GC B cell
+
+```{r}
+# arcs
+vec_sectors_gc_rmb_tp = c("bloodMemoryBulk_d201",
+                          "GC_d28", "GC_d35", "GC_d60", "GC_d110", "GC_d201")
+# compartment of each arc
+vec_sectors_type_gc_rmb_tp = c("bloodMemoryBulk_d201",
+                               "GC", "GC", "GC", "GC", "GC")
+# colour of each arc
+vec_sectors_color_gc_rmb_tp = c("plum2",
+                                "dodgerblue2", "dodgerblue2", "dodgerblue2", "dodgerblue2", "dodgerblue2")
+
+# width of gaps between arcs
+vec_gaps_gc_rmb_tp = rep(7, length(vec_sectors_gc_rmb_tp))
+# definition of overlap (i.e. between MBC and GC B cell)
+vec_overlap_types_gc_rmb_tp = c("bloodMemoryBulk_d201", "GC")
+# column in sequence data.frame that contains arc labels
+col_sector_gc_rmb_tp = col_comp_tp_2_var
+# colour of chord when there's overlap
+color_overlap_gc_rmb_tp = "purple"
+# colour of chord when there's no overlap
+color_no_overlap_gc_rmb_tp = "gray40"
+
+# [-1] to exclude 368-01a from whom there was no d201 memory sort from blood
+for (d in DONORS[-1]) {
+    cat("\n", d, "\n")
+    
+    # subset to current donor
+    d_db = db[db[[col_donor]]==d, ]
+    d_clone_info = clone_info[clone_info[[col_clone_id]] %in% d_db[[col_clone_id]], ]
+    
+    d_fn = paste0("ed_fig_3b_", d, ".pdf")
+    pdf(d_fn, width=5, height=5)
+    
+    circos_clonal_overlap(vec_sectors=vec_sectors_gc_rmb_tp, 
+                          vec_sectors_type=vec_sectors_type_gc_rmb_tp, 
+                          vec_sectors_color=vec_sectors_color_gc_rmb_tp, 
+                          vec_gaps=vec_gaps_gc_rmb_tp,  
+                          vec_overlap_types=vec_overlap_types_gc_rmb_tp,
+                          col_sector=col_sector_gc_rmb_tp, 
+                          col_clone_id=col_clone_id, 
+                          df_seq_data=d_db, 
+                          df_clone_info=d_clone_info, 
+                          color_overlap=color_overlap_gc_rmb_tp, 
+                          color_no_overlap=color_no_overlap_gc_rmb_tp)
+    
+    dev.off()
+}
+```
+
+
+# Clone-wise SHM frequency comparison between compartments
+
+* Fig 3b
+* Fig 3e
+* Extended Data Fig 3d
+
+### How to read the clone-wise SHM frequency plots
+
+* Each line corresponds to a B cell clone
+* Each end of the line corresponds to the median SHM frequency of the clonal 
+members in a given compartment or compartment-timepoint combination
+
+### Preparation
+
+#### Fig 3b - PB vs. GC B cell
+
+```{r}
+# all compartment-timepoint combinations to consider
+alluv_cols_pb_gc = c(paste0("PB_d", c("28")),
+                     paste0("GC_d", c(28,35,60,110,201)))
+
+# regex to extract what labels define overlap
+vec_overlap_regex_pb_gc = c("PB_", "GC_")
+
+# `prep_for_alluv` returns `alluv_df` and `alluv_lst_cl_id` (explained below)
+alluv_prep_pb_gc = prep_for_alluv(alluv_cols=alluv_cols_pb_gc, 
+                                  df_clone_info=clone_info,
+                                  col_df_clone_id=col_clone_id,
+                                  vec_overlap_regex=vec_overlap_regex_pb_gc)
+
+# `alluv_df` 
+# (i) exhaustively lists all binary combinations of all compartment-timepoint's
+# (ii) counts the number of clones belonging to each binary combination
+# (iii) determines whether each binary combination constitutes an overlap
+
+# E.g.:
+#   PB_d28 GC_d28 GC_d35 GC_d60 GC_d110 GC_d201 count overlap
+# 1   TRUE   TRUE   TRUE   TRUE    TRUE    TRUE     0    TRUE
+# 2  FALSE   TRUE   TRUE   TRUE    TRUE    TRUE     0   FALSE
+alluv_df_pb_gc = alluv_prep_pb_gc[["alluv_df"]]
+
+# `alluv_lst_cl_id`
+# For each binary combination (row) in `alluv_df`,
+# record the clone IDs of the clones belonging to that binary combination
+alluv_lst_cl_id_pb_gc = alluv_prep_pb_gc[["alluv_lst_cl_id"]]
+
+# compartment-timepoint's to visualize
+lst_pairs_pb_gc = list(c("PB_d28", "GC_d28"),
+                       c("PB_d28", "GC_d35"),
+                       c("PB_d28", "GC_d60"),
+                       c("PB_d28", "GC_d110"),
+                       c("PB_d28", "GC_d201"))
+
+# `prep_for_paired_mf` returns `vec_facets`, `pairs_df_wide/long` (explained below)
+prep_pairs_pb_gc = prep_for_paired_mf(lst_pairs=lst_pairs_pb_gc, 
+                                      alluv_cols=alluv_cols_pb_gc, 
+                                      alluv_df=alluv_df_pb_gc, 
+                                      alluv_lst_cl_id=alluv_lst_cl_id_pb_gc,
+                                      df_data=db, 
+                                      col_df_clone_id=col_clone_id, 
+                                      col_df_mf=col_mf, 
+                                      col_df_label=col_comp_tp_2) 
+
+# a vector specified how a plot is to be faceted
+vec_facets_pb_gc = prep_pairs_pb_gc[["vec_facets"]]
+
+# A wide-format data.frame
+# Each row corresponds to a clone
+# `a_ident` and `b_ident` specifies the compartment-timepoint's of interest
+# `a_val` and `b_val` records the clonal median SHM frequency of `a_ident` and `b_ident` resp.
+
+# E.g.:
+#             facet        clone_id a_ident b_ident       a_val       b_val
+# 1 PB_d28 + GC_d28 368-07@G1353_12  PB_d28  GC_d28 0.007407407 0.011111111
+# 2 PB_d28 + GC_d28  368-07@G1385_1  PB_d28  GC_d28 0.011111111 0.007407407
+pairs_df_wide_pb_gc = prep_pairs_pb_gc[["pairs_df_wide"]]
+
+# The same data.frame in long-format; used by ggplot2
+pairs_df_long_pb_gc = prep_pairs_pb_gc[["pairs_df_long"]]
+
+# create an artificial ident_2 column so that GC_d28/35/60/110/201 can 
+# all be plotted at the same x position
+pairs_df_long_pb_gc[["ident_2"]] = ifelse(pairs_df_long_pb_gc[["ident"]]=="PB_d28", "PB", "GC")
+pairs_df_long_pb_gc[["ident_2"]] = factor(pairs_df_long_pb_gc[["ident_2"]], levels=c("PB", "GC"))
+
+# create an artificial dummy column to control line colour
+pairs_df_long_pb_gc[["hack"]] = factor("dummy")
+```
+
+#### Fig 3e - LNPC vs. GC B cell
+
+```{r}
+# all compartment-timepoint combinations to consider
+alluv_cols_gc_lnpc = c(paste0("GC_d", c(28,35,60,110,201)),
+                       paste0("LNPC_d", c(28,35,60,110,201)))
+
+# regex to extract what labels define overlap
+vec_overlap_regex_gc_lnpc = c("GC_", "LNPC_")
+
+# prep_for_alluv returns `alluv_df` and `alluv_lst_cl_id` (explained below)
+alluv_prep_gc_lnpc = prep_for_alluv(alluv_cols=alluv_cols_gc_lnpc, 
+                                    df_clone_info=clone_info,
+                                    col_df_clone_id=col_clone_id,
+                                    vec_overlap_regex=vec_overlap_regex_gc_lnpc)
+
+# `alluv_df` 
+# (i) exhaustively lists all binary combinations of all compartment-timepoint's
+# (ii) counts the number of clones belonging to each binary combination
+# (iii) determines whether each binary combination constitutes an overlap
+
+# E.g.:
+#   GC_d28 GC_d35 GC_d60 GC_d110 GC_d201 LNPC_d28 LNPC_d35 LNPC_d60 LNPC_d110 LNPC_d201 count overlap
+# 1   TRUE   TRUE   TRUE    TRUE    TRUE     TRUE     TRUE     TRUE      TRUE      TRUE     0    TRUE
+# 2  FALSE   TRUE   TRUE    TRUE    TRUE     TRUE     TRUE     TRUE      TRUE      TRUE     0    TRUE
+alluv_df_gc_lnpc = alluv_prep_gc_lnpc[["alluv_df"]]
+
+# `alluv_lst_cl_id`
+# For each binary combination (row) in `alluv_df`,
+# record the clone IDs of the clones belonging to that binary combination
+alluv_lst_cl_id_gc_lnpc = alluv_prep_gc_lnpc[["alluv_lst_cl_id"]]
+
+# compartment-timepoint's to visualize
+lst_pairs_gc_lnpc = list(c("GC_d28", "LNPC_d28"),
+                         c("GC_d35", "LNPC_d35"),
+                         c("GC_d60", "LNPC_d60"),
+                         c("GC_d110", "LNPC_d110"),
+                         c("GC_d201", "LNPC_d201"))
+
+# `prep_for_paired_mf` returns `vec_facets`, `pairs_df_wide/long` (explained below)
+prep_pairs_gc_lnpc = prep_for_paired_mf(lst_pairs=lst_pairs_gc_lnpc, 
+                                        alluv_cols=alluv_cols_gc_lnpc, 
+                                        alluv_df=alluv_df_gc_lnpc, 
+                                        alluv_lst_cl_id=alluv_lst_cl_id_gc_lnpc,
+                                        df_data=db, 
+                                        col_df_clone_id=col_clone_id, 
+                                        col_df_mf=col_mf, 
+                                        col_df_label=col_comp_tp_2)
+
+# a vector specified how a plot is to be faceted
+vec_facets_gc_lnpc = prep_pairs_gc_lnpc[["vec_facets"]]
+
+# A wide-format data.frame
+# Each row corresponds to a clone
+# `a_ident` and `b_ident` specifies the compartment-timepoint's of interest
+# `a_val` and `b_val` records the clonal median SHM frequency of `a_ident` and `b_ident` resp.
+
+# E.g.:
+#               facet        clone_id a_ident  b_ident       a_val       b_val
+# 1 GC_d28 + LNPC_d28  368-04@G1029_1  GC_d28 LNPC_d28 0.016666667 0.011111111
+# 2 GC_d28 + LNPC_d28 368-04@G1186_12  GC_d28 LNPC_d28 0.009259259 0.009259259
+pairs_df_wide_gc_lnpc = prep_pairs_gc_lnpc[["pairs_df_wide"]]
+
+# The same data.frame in long-format; used by ggplot2
+pairs_df_long_gc_lnpc = prep_pairs_gc_lnpc[["pairs_df_long"]]
+
+# create an artificial ident_2 column so that GC_d28/35/60/110/201 can 
+# all be plotted at the same x position
+pairs_df_long_gc_lnpc[["ident_2"]] = sapply(pairs_df_long_gc_lnpc[["ident"]], 
+                                            function(s){strsplit(as.character(s), "_")[[1]][1]})
+pairs_df_long_gc_lnpc[["ident_2"]] = factor(pairs_df_long_gc_lnpc[["ident_2"]], 
+                                            levels=c("GC", "LNPC"))
+
+# create an artificial dummy column to control line colour
+pairs_df_long_gc_lnpc[["hack"]] = factor("dummy")
+```
+
+#### Extended Data Fig 3d - MBC vs. GC B cell
+
+```{r}
+# all compartment-timepoint combinations to consider
+alluv_cols_gc_rmb = c("GC_d201", "bloodMemoryBulk_d201")
+
+# regex to extract what labels define overlap
+vec_overlap_regex_gc_rmb = c("GC_", "bloodMemoryBulk_")
+
+# prep_for_alluv returns `alluv_df` and `alluv_lst_cl_id` (explained below)
+alluv_prep_gc_rmb = prep_for_alluv(alluv_cols=alluv_cols_gc_rmb, 
+                                   df_clone_info=clone_info,
+                                   col_df_clone_id=col_clone_id,
+                                   vec_overlap_regex=vec_overlap_regex_gc_rmb)
+
+# `alluv_df` 
+# (i) exhaustively lists all binary combinations of all compartment-timepoint's
+# (ii) counts the number of clones belonging to each binary combination
+# (iii) determines whether each binary combination constitutes an overlap
+
+# E.g.:
+#   GC_d201 bloodMemoryBulk_d201 count overlap
+# 1    TRUE                 TRUE    33    TRUE
+# 2   FALSE                 TRUE   131   FALSE
+# 3    TRUE                FALSE   109   FALSE
+# 4   FALSE                FALSE  1111   FALSE
+alluv_df_gc_rmb = alluv_prep_gc_rmb[["alluv_df"]]
+
+# `alluv_lst_cl_id`
+# For each binary combination (row) in `alluv_df`,
+# record the clone IDs of the clones belonging to that binary combination
+alluv_lst_cl_id_gc_rmb = alluv_prep_gc_rmb[["alluv_lst_cl_id"]]
+
+# compartment-timepoint's to visualize
+lst_pairs_gc_rmb = list(c("GC_d201", "bloodMemoryBulk_d201"))
+
+# `prep_for_paired_mf` returns `vec_facets`, `pairs_df_wide/long` (explained below)
+prep_pairs_gc_rmb = prep_for_paired_mf(lst_pairs=lst_pairs_gc_rmb, 
+                                       alluv_cols=alluv_cols_gc_rmb, 
+                                       alluv_df=alluv_df_gc_rmb, 
+                                       alluv_lst_cl_id=alluv_lst_cl_id_gc_rmb,
+                                       df_data=db, 
+                                       col_df_clone_id=col_clone_id, 
+                                       col_df_mf=col_mf, 
+                                       col_df_label=col_comp_tp_2_var 
+)
+
+# a vector specified how a plot is to be faceted
+vec_facets_gc_rmb = prep_pairs_gc_rmb[["vec_facets"]]
+
+# A wide-format data.frame
+# Each row corresponds to a clone
+# `a_ident` and `b_ident` specifies the compartment-timepoint's of interest
+# `a_val` and `b_val` records the clonal median SHM frequency of `a_ident` and `b_ident` resp.
+
+# E.g.:
+#                            facet        clone_id a_ident              b_ident      a_val      b_val
+# 1 GC_d201 + bloodMemoryBulk_d201 368-07@G1353_12 GC_d201 bloodMemoryBulk_d201 0.05185185 0.05555556
+# 2 GC_d201 + bloodMemoryBulk_d201  368-07@G1385_1 GC_d201 bloodMemoryBulk_d201 0.05185185 0.03518519
+pairs_df_wide_gc_rmb = prep_pairs_gc_rmb[["pairs_df_wide"]]
+
+# The same data.frame in long-format; used by ggplot2
+pairs_df_long_gc_rmb = prep_pairs_gc_rmb[["pairs_df_long"]]
+
+
+# create an artificial ident_2 column to simplify compartment-timepoint labels
+# to just compartment (since both are d201)
+pairs_df_long_gc_rmb[["ident_2"]] = sapply(pairs_df_long_gc_rmb[["ident"]], 
+                                           function(s){strsplit(as.character(s), "_")[[1]][1]})
+pairs_df_long_gc_rmb[["ident_2"]] = factor(pairs_df_long_gc_rmb[["ident_2"]], 
+                                           levels=c("GC", "bloodMemoryBulk") 
+)
+
+# create an artificial dummy column to control line colour
+pairs_df_long_gc_rmb[["hack"]] = factor("dummy")
+```
+
+### Visualization
+
+```{r}
+# common y-axis upper limit for {PB vs GC}, {GC vs LNPC}, {GC vs RMB}
+ymax_common_gg = max(c(pairs_df_long_gc_lnpc[["val"]], 
+                       pairs_df_long_pb_gc[["val"]],
+                       pairs_df_long_gc_rmb[["val"]]))
+
+# line color
+col_line = scales::alpha("purple", 0.35)
+```
+
+#### Fig 3b - PB vs. GC B cell
+
+```{r}
+pairs_pb_gc_plot = ggplot(pairs_df_long_pb_gc, 
+                          aes(x=ident_2, y=val, group=clone_id)) + 
+    # line before point so that point overrides line ends
+    geom_line(aes(color=hack)) +
+    ylim(0, ymax_common_gg*1.02) +
+    geom_point(aes(color=ident_2), shape=1) +
+    scale_color_manual(values=c("PB"="firebrick2", "GC"="dodgerblue2", 
+                                "dummy"=col_line)) +
+    facet_grid(cols=vars(facet)) +
+    labs(y="IGHV nucleotide mutation frequency") +
+    theme_bw() +
+    theme(axis.title.x=element_blank()) +
+    theme(axis.text.x=element_text(size=13)) +
+    theme(axis.text.y=element_text(size=13)) +
+    theme(axis.title=element_text(size=13)) +
+    theme(strip.background=element_rect(fill="transparent"),
+          strip.text.x=element_text(size=13)) +
+    theme(legend.position="none") +
+    theme(panel.grid.major=element_blank() # remove grid
+    )
+
+fn = "fig_3b.pdf"
+ggsave(filename=fn, plot=pairs_pb_gc_plot, device="pdf", width=10, height=4)
+
+# stats
+# (i) print out, for each facet, 
+#  - the number of clones
+#  - the median SHM frequency of each compartment-timepoint
+#    (a_val is always plotted on the left; b_val always on the right)
+# (ii) perform two-sided, paired, Mann-Whitney tests
+#  - correction for multiple testing by Benjamini & Hochberg
+pairs_p_pb_gc = get_stat_paired_mf(vec_facets=vec_facets_pb_gc, 
+                                   pairs_df_wide=pairs_df_wide_pb_gc, 
+                                   p_adj_method="BH")
+
+pairs_p_pb_gc[["vec_p_unadj"]]
+pairs_p_pb_gc[["vec_p_adj"]]
+```
+
+#### Fig 3e - LNPC vs. GC B cell
+
+```{r}
+pairs_gc_lnpc_plot = ggplot(pairs_df_long_gc_lnpc, 
+                            aes(x=ident_2, y=val, group=clone_id)) + 
+    # line before point so that point overrides line ends
+    geom_line(aes(color=hack)) +
+    ylim(0, ymax_common_gg*1.02) +
+    geom_point(aes(color=ident_2), shape=1) +
+    scale_color_manual(values=c("LNPC"="forestgreen", "GC"="dodgerblue2", 
+                                "dummy"=col_line)) +
+    facet_grid(cols=vars(facet)) +
+    labs(y="IGHV nucleotide mutation frequency") +
+    theme_bw() +
+    theme(axis.title.x=element_blank()) +
+    theme(axis.text.x=element_text(size=13)) +
+    theme(axis.text.y=element_text(size=13)) +
+    theme(axis.title=element_text(size=13)) +
+    theme(strip.background=element_rect(fill="transparent"),
+          strip.text.x=element_text(size=13)) +
+    theme(legend.position="none") +
+    theme(panel.grid.major=element_blank() # remove grid
+    )
+
+fn = "fig_3e.pdf"
+ggsave(filename=fn, plot=pairs_gc_lnpc_plot, device="pdf", width=10, height=4)
+
+# stats
+# (i) print out, for each facet, 
+#  - the number of clones
+#  - the median SHM frequency of each compartment-timepoint
+#    (a_val is always plotted on the left; b_val always on the right)
+# (ii) perform two-sided, paired, Mann-Whitney tests
+#  - correction for multiple testing by Benjamini & Hochberg
+pairs_p_gc_lnpc = get_stat_paired_mf(vec_facets=vec_facets_gc_lnpc, 
+                                     pairs_df_wide=pairs_df_wide_gc_lnpc, 
+                                     p_adj_method="BH")
+
+pairs_p_gc_lnpc[["vec_p_unadj"]]
+pairs_p_gc_lnpc[["vec_p_adj"]]
+```
+
+#### Extended Data Fig 3d - MBC vs. GC B cell
+
+```{r}
+pairs_gc_rmb_plot = ggplot(pairs_df_long_gc_rmb, 
+                           aes(x=ident_2, y=val, group=clone_id)) + 
+    # line before point so that point overrides line ends
+    geom_line(aes(color=hack)) +
+    ylim(0, ymax_common_gg*1.02) +
+    geom_point(aes(color=ident_2), shape=1) +
+    scale_color_manual(values=c(
+        "bloodMemoryBulk"="plum2", 
+        "GC"="dodgerblue2", 
+        "dummy"=col_line)) +
+    facet_grid(cols=vars(facet)) +
+    labs(y="IGHV nucleotide mutation frequency") +
+    theme_bw() +
+    theme(axis.title.x=element_blank()) +
+    theme(axis.text.x=element_text(size=13)) +
+    theme(axis.text.y=element_text(size=13)) +
+    theme(axis.title=element_text(size=13)) +
+    theme(strip.background=element_rect(fill="transparent"),
+          strip.text.x=element_text(size=13)) +
+    theme(legend.position="none") +
+    theme(panel.grid.major=element_blank()) # remove grid
+
+fn = "ed_fig_3d.pdf"
+ggsave(filename=fn, plot=pairs_gc_rmb_plot, device="pdf", width=3, height=4) 
+
+# stats
+# (i) print out, for each facet, 
+#  - the number of clones
+#  - the median SHM frequency of each compartment-timepoint
+#    (a_val is always plotted on the left; b_val always on the right)
+# (ii) perform two-sided, paired, Mann-Whitney tests
+#  - correction for multiple testing by Benjamini & Hochberg
+pairs_p_gc_rmb = get_stat_paired_mf(vec_facets=vec_facets_gc_rmb, 
+                                    pairs_df_wide=pairs_df_wide_gc_rmb, 
+                                    p_adj_method="BH")
+
+pairs_p_gc_rmb[["vec_p_unadj"]]
+pairs_p_gc_rmb[["vec_p_adj"]]
+```
+
+# Overall SHM frequency 
+
+* Fig 3c
+* Fig 4b
+* Extended Data Fig 3c
+* Extended Data Fig 4a
+
+*The code-generated plots from below were prototypes based on which the published 
+versions were generated using GraphPad Prism v9.*
+
+### Fig 3c & Extended Data Fig 3c - GC B cell
+
+```{r}
+### prep
+
+# common y-axis upper limit for overall SHM frequency plots
+mf_ymax = max(db[[col_mf]][!is.na(db[[col_comp]])])
+
+# timepoints to visualize
+uniq_gc_tp = paste0("d", c(28,35,60,110,201))
+# sanity check that all timepoints exist
+stopifnot(all( uniq_gc_tp %in% unique(db[[col_tp_2]][which(db[[col_comp]]=="GC")]) ))
+
+# collect SHM frequencies
+# stratified by timepoint, combining participants
+mf_gc_comb = sapply(uniq_gc_tp, function(i){
+    db[[col_mf]][which(db[[col_comp]]=="GC" & db[[col_tp_2]]==i)]
+})
+counts_mf_gc_comb = unlist(lapply(mf_gc_comb, length))
+
+# collect SHM frequencies
+# stratified by timepoint and by participant
+mf_gc_by_donor = lapply(DONORS, function(d){
+    cur_db = db[db[[col_donor]]==d, ]
+    sapply(uniq_gc_tp, function(i){
+        cur_db[[col_mf]][which(cur_db[[col_comp]]=="GC" & cur_db[[col_tp_2]]==i)]
+    })
+})
+names(mf_gc_by_donor) = DONORS
+counts_mf_gc_by_donor = do.call(rbind, 
+                                lapply(mf_gc_by_donor, 
+                                       function(l){unlist(lapply(l, length))}))
+
+# sanity check
+# the number of sequences when combining participants should match 
+# the sum of individual participants
+stopifnot(all.equal(counts_mf_gc_comb, colSums(counts_mf_gc_by_donor)))
+
+
+### Fig 3c: combining participants
+
+fn = "fig_3c_prototype.pdf"
+pdf(fn, width=5.5, height=5)
+par(mfrow=c(1,1),
+    mar=c(2,4.5,0.5,0.5)) # BLTR
+vioplotLst(vecLst=mf_gc_comb, vioYmax=mf_ymax*1.05,
+           boxBkgCol=rep(scales::alpha("dodgerblue2", 0.85), length(mf_gc_comb)),
+           useBoxplot=T, showPoints=F,
+           xNames=names(mf_gc_comb), xTick=F, xLas=1, yLas=1,
+           ylab="IGHV nucleotide mutation frequency", title="")
+dev.off()
+
+# medians
+unlist(lapply(mf_gc_comb, median))
+
+
+### Extended Data Fig 3c: by participant
+
+n_plot_per_row = 4
+n_row = ceiling(length(DONORS)/n_plot_per_row)
+
+fn = "ed_fig_3c_prototype.pdf"
+pdf(fn, width=14, height=6)
+par(mfrow=c(n_row, n_plot_per_row), 
+    mar=c(2,4.5,2,0.5)) # BLTR
+
+for (d in DONORS) {
+    vioplotLst(vecLst=mf_gc_by_donor[[d]], vioYmax=mf_ymax*1.05, 
+               boxBkgCol=rep(scales::alpha("dodgerblue2", 0.85), length(mf_gc_by_donor[[d]])),
+               useBoxplot=T, showPoints=F,
+               xNames=names(mf_gc_by_donor[[d]]), xTick=F, xLas=1, yLas=1,
+               ylab="IGHV nucleotide mutation frequency", title=d)
+}
+
+dev.off()
+```
+
+### Fig 4b - PB and LNPC
+
+```{r}
+### prep
+
+# compartment-timepoint's to visualize
+# leave out BMPC for now 
+vec_comp_tp = c("PB_d28", 
+                paste0("LNPC_d", c(28,35,60,110,201)))
+
+# collect SHM frequencies
+lst_comp_tp_mf = lapply(vec_comp_tp, function(s){
+    db[[col_mf]][which(db[[col_comp_tp_2]]==s)]
+})
+
+# BMPC is separately labelled as LLPC_d201 and LLPC_d280 in `db`,
+# but we'd like to visualize BMPC as a single column, combining d201 and d280
+# Extract SHM frequencies for BMPC separately and append to `lst_comp_tp_mf`
+lst_comp_tp_mf = c(lst_comp_tp_mf,
+                   list("BMPC"=db[[col_mf]][which(db[[col_comp]]=="LLPC")]))
+vec_comp_tp = c(vec_comp_tp, "BMPC")
+names(lst_comp_tp_mf) = vec_comp_tp
+
+# colours
+vec_comp_tp_col = c("firebrick2",
+                    rep("forestgreen", 5), "black")
+# transparency level
+vec_comp_tp_col = scales::alpha(vec_comp_tp_col, 0.8)
+
+# beautify text labels for display
+vec_comp_tp_display = sapply(vec_comp_tp, function(s){
+    s_split = strsplit(s, "_")[[1]]
+    s_display = paste0(s_split[1], "\n", s_split[2])
+    return(s_display)
+})
+
+### visualize
+
+fn = "fig_4b_prototype.pdf"
+pdf(fn, width=10, height=5)
+par(mar=c(2,5,0.5,0.5)) # BLTR
+
+vioplotLst(vecLst=lst_comp_tp_mf, xNames=vec_comp_tp, 
+           xTick=F, xLas=1, yLas=2, ylab="IGHV nucleotide mutation frequency",
+           boxBkgCol=vec_comp_tp_col, boxLwd=1,
+           useBoxplot=T, showPoints=F, 
+           pointsPch=rep(16, length(lst_comp_tp_mf)),
+           pointsCol=rep("gray70", length(lst_comp_tp_mf)),
+           pointsCex=0.3,
+           pointsJitterAmount=0.3)
+
+dev.off()
+
+# medians
+unlist(lapply(lst_comp_tp_mf, median))
+```
+
+### Extended Data Fig 4a - all compartments
+
+```{r}
+# collect SHM frequencies of PB, GC B cell, and LNPC compartments
+mf_comb = sapply(c("PB","GC","LNPC","LLPC"), function(i){
+    db[[col_mf]][which(db[[col_comp]]==i)]
+})
+
+# append SHM frequencies of MBC compartment, defined as 
+# d201 bulk-sequenced memory sorts from blood
+mf_comb = c(mf_comb, 
+            list("MBC"=db[[col_mf]][db[[col_mem]]]))
+
+# order of display
+mf_comb_vec_select = c("PB","GC","LNPC","MBC","LLPC")
+# colours
+mf_comb_vec_select_col = c("firebrick2", "dodgerblue2", "forestgreen", "plum2", "black")
+# transparency level
+mf_comb_vec_select_col = scales::alpha(mf_comb_vec_select_col, 0.85)
+
+fn = "ed_fig_4a_prototype.pdf"
+pdf(fn, width=5.5, height=5)
+par(mfrow=c(1,1),
+    mar=c(2,4.5,0.5,0.5)) # BLTR
+vioplotLst(vecLst=mf_comb[mf_comb_vec_select], vioYmax=mf_ymax*1.05, 
+           boxBkgCol=mf_comb_vec_select_col,
+           useBoxplot=T, showPoints=F,
+           xNames=mf_comb_vec_select, xTick=F, xLas=1, yLas=1,
+           ylab="IGHV nucleotide mutation frequency", title="")
+dev.off()
+
+# median
+unlist(lapply(mf_comb, median))
+```
+
+# Phylogenetic trees
+
+* Fig 4c
+* Extended Data Fig 4b
+
+```{r}
+# files containing tree topology 
+# each file corresponds to a S+ BMPC clone
+vec_tree_files = list.files(path="./assets/igphyml_output", pattern="_tree_HLP.txt")
+vec_tree_clones = sapply(vec_tree_files, function(s){ strsplit(s, ".fasta")[[1]][1] })
+
+# sanity check that all the clones are in `db`
+stopifnot(all(vec_tree_clones %in% db[[col_clone_id]]))
+
+# loop through the clones
+for (i_cl in 1:length(vec_tree_clones)) {
+    
+    cur_cl = vec_tree_clones[i_cl]
+    cur_cl_split = strsplit(cur_cl, "@")[[1]]
+    # donor ID
+    cur_d = cur_cl_split[1]
+    
+    cur_fn_tree = vec_tree_files[i_cl]
+    cur_fn_plot = paste0("tree_", i_cl, "_", cur_cl, ".pdf")
+    
+    ### read in tree
+    
+    cur_newick = read.tree(file=paste0("./assets/igphyml_output/", cur_fn_tree))
+    # phylo
+    class(cur_newick)
+    
+    # number of tips
+    cur_n_tips = length(cur_newick[["tip.label"]])
+    
+    
+    ### metadata
+    
+    cur_tibble = as_tibble(cur_newick)
+    # tbl_tree
+    class(cur_tibble)
+    
+    # extract sequence_id to use as anchor to obtain metadata from `db`
+    cur_tip_ids = sapply(cur_tibble[["label"]], function(s){
+        if (!is.na(s)) {
+            # if _GERM_
+            if (grepl(pattern="_GERM_", x=s)) {
+                return("Germline")
+            } else {
+                # regex operations
+                
+                # igphyml converts "," in "368-07_b7@u97437,s1" to "-"
+                # e.g. "368-07_b7@u97445-s1_bulk_368-07_b7_LN_GCd28_NA_IGHG_NA"
+                if (grepl(pattern="@u[[:digit:]]+-s[[:digit:]]+_bulk", x=s)) {
+                    # first extract part in front of _bulk
+                    # e.g. "368-07_b7@u97445-s1"
+                    ss = strsplit(s, "_tgx|_bulk|_mab")[[1]][1]
+                    # split by @
+                    ss_split = strsplit(ss, "@")[[1]]
+                    ss_1 = ss_split[1]
+                    ss_2 = ss_split[2]
+                    # replace - with ,
+                    ss_2_mod = sub(pattern="-", replacement=",", x=ss_2, fixed=T)
+                    ss_new = paste0(ss_1, "@", ss_2_mod)
+                } else {
+                    return(strsplit(s, "_tgx|_bulk|_mab")[[1]][1])
+                }
+            }
+        } else {
+            # NA remains NA
+            return(NA)
+        }
+    })
+    
+    # match against db
+    cur_idx = match(cur_tip_ids, db[[col_seq_id]])
+    # sanity check
+    # NAs in cur_idx correspond to NAs or _GERM_ in $label
+    # +1 for _GERM_
+    stopifnot(sum(is.na(cur_idx)) == sum(is.na(cur_tibble[["label"]]))+1)
+    
+    bool_cur_idx_no_na = !is.na(cur_idx)
+    # sanity check
+    stopifnot(all.equal(cur_tip_ids[bool_cur_idx_no_na], 
+                        db[[col_seq_id]][cur_idx[bool_cur_idx_no_na]],
+                        check.attributes=F))
+    
+    # meta columns
+    cur_meta_cols = c(col_seq_id, col_donor, col_comp, col_tp_2)
+    stopifnot(all(cur_meta_cols %in% colnames(db)))
+    
+    cur_meta = db[cur_idx[bool_cur_idx_no_na], cur_meta_cols]
+    
+    for (cur_col in cur_meta_cols) {
+        cur_tibble[[cur_col]] = NA
+        cur_tibble[[cur_col]][bool_cur_idx_no_na] = cur_meta[[cur_col]]
+    }
+    
+    # aesthetic mapping
+    # colour: timepoint
+    # shape: compartment (PB, LNPC, LLPC)
+    
+    vec_map_shape = c("PB"=22, "LNPC"=24, "LLPC"=23)
+    
+    vec_map_fill = c("d28"="#B22222", 
+                     "d35"="hotpink", 
+                     "d60"="#DB961D", 
+                     "d110"="#33A82C", 
+                     "d201"="#1C86EE",
+                     "d280"="#1C86EE")
+    stopifnot(all(names(vec_map_fill) %in% db[[col_tp_2]]))
+    
+    # factorize for ggplot2
+    cur_tibble[[col_comp]] = factor(cur_tibble[[col_comp]],
+                                    levels=names(vec_map_shape))
+    
+    cur_tibble[[col_tp_2]] = factor(cur_tibble[[col_tp_2]], 
+                                    levels=names(vec_map_fill)) 
+    
+    head(cur_tibble)
+    
+    # back to phylo
+    cur_phylo = as.phylo(cur_tibble)
+    
+    
+    ### visualize
+
+    # There's a row with all NA's
+    # This corresponds to the germline
+    # Its presence triggers a warning:
+    # "Removed 1 rows containing missing values (geom_point_g_gtree)"
+    # This warning can be safely ignored
+    
+    size_tippoint=2
+    height_pdf=6
+    
+    p_base = ggtree(cur_phylo)
+    
+    p_comp_tp = p_base %<+% cur_tibble +
+        # `stroke` controls width of outline of shape 
+        # `size` controls area of inside of shape
+        geom_tippoint(aes(shape=compartment, 
+                          fill=timepoint_2),
+                      size=size_tippoint, stroke=0, col="transparent") +
+        # `na.translate=F` hides the NA level in legend
+        # `name` controls title of respective legend
+        scale_shape_manual(
+            values=vec_map_shape[names(vec_map_shape) %in% cur_tibble[[col_comp]]], 
+            na.translate=F, name="Compartment") +
+        scale_fill_manual(
+            values=vec_map_fill[names(vec_map_fill) %in% cur_tibble[[col_tp_2]]], 
+            na.translate=F, name="Timepoint") +
+        # guides(size=F) + # hide legend for `size`
+        # override aes as default doesn't appear to be working
+        # order specified position of each of multiple legends (`order` should be outside `override.aes`)
+        guides(fill=guide_legend(
+            override.aes=list(size=5, 
+                              color=vec_map_fill[names(vec_map_fill) %in% cur_tibble[[col_tp_2]]]),
+            order=2),
+            shape=guide_legend(
+                override.aes=list(size=4, stroke=1, color="black", fill="transparent",
+                                  shape=vec_map_shape[names(vec_map_shape) %in% cur_tibble[[col_comp]]]),
+                order=1)
+        ) +
+        geom_treescale(x=0, y=cur_n_tips*0.9) 
+    
+    
+    ggsave(filename=cur_fn_plot, plot=p_comp_tp, device="pdf", width=5, height=height_pdf)
+    
+    rm(p_base, p_comp_tp, cur_tibble, cur_meta, cur_phylo)
+}
+```
+
+# V-J gene usage
+
+* Extended Data Fig 2f
+
+```{r}
+### prep
+
+# For each unique clone ID in `clone_info`, find a match in `db`
+# No need to find al matches in `db` since by design all sequences from the same
+# clone would have the same clonal consensus germline annotations
+idx_cl = match(clone_info[[col_clone_id]], db[[col_clone_id]])
+# sanity checks
+stopifnot(!any(is.na(idx_cl)))
+stopifnot(all.equal(clone_info[[col_clone_id]], db[[col_clone_id]][idx_cl]))
+
+# Clonal consensus germline V and J gene annotations
+# These were arrived at after
+# - initial VDJ annotation by IgBLAST
+# - individualized genotyping by TigGER
+# - `CreateGermlines.py --cloned` by Change-O
+clone_info[["germline_v_call"]] = db[["germline_v_call"]][idx_cl]
+clone_info[["germline_j_call"]] = db[["germline_j_call"]][idx_cl]
+
+# `tabulate_vj` counts, in each participant, the number of clones
+# using a given V and J gene combination
+lst_vj_s_pos = tabulate_vj(vec_v=clone_info[["germline_v_call"]], 
+                           vec_j=clone_info[["germline_j_call"]], 
+                           vec_subj=clone_info[[col_donor]],
+                           anno_separator=",")
+
+# For each V-J combination, count the number of donors using that combination
+
+# V-J combinations
+df_vj_s_pos_num_donor_base = lst_vj_s_pos[["common"]][[1]][, c("v", "j")]
+
+# append $count columns, each column corresponds to a donor
+df_vj_s_pos_num_donor = cbind(df_vj_s_pos_num_donor_base,
+                              do.call(cbind, lapply(lst_vj_s_pos[["common"]], 
+                                                    function(l){ l[, "count"] })))
+
+# count the number of donors in which a V-J was present
+df_vj_s_pos_num_donor[["num_donor"]] = rowSums(df_vj_s_pos_num_donor[, -(1:2)]>0)
+# 1st row: num of donors
+# 2nd row: num of V-J's
+table(df_vj_s_pos_num_donor[["num_donor"]], useNA="ifany")
+
+# data.frame to be used by ggplot2
+df_vj_s_pos_num_donor_vis = df_vj_s_pos_num_donor[, c("v", "j", "num_donor")]
+
+df_vj_s_pos_num_donor_vis[["v"]] = factor(df_vj_s_pos_num_donor_vis[["v"]],
+                                          levels=sort(unique(df_vj_s_pos_num_donor_vis[["v"]])))
+
+df_vj_s_pos_num_donor_vis[["j"]] = factor(df_vj_s_pos_num_donor_vis[["j"]],
+                                          levels=sort(unique(df_vj_s_pos_num_donor_vis[["j"]])))
+
+df_vj_s_pos_num_donor_vis[["num_donor"]] = factor(df_vj_s_pos_num_donor_vis[["num_donor"]])
+
+
+### visualize
+
+# color palette
+# https://colorbrewer2.org/#type=sequential&scheme=GnBu&n=9
+palette_num_donor = c('#f7fcf0','#e0f3db','#ccebc5','#a8ddb5','#7bccc4','#4eb3d3','#2b8cbe','#0868ac','#084081')
+
+# heatmap
+# great tutorial: https://www.royfrancis.com/a-guide-to-elegant-tiled-heatmaps-in-r-2019/
+
+hm_vj_s_pos_num_donor = ggplot(df_vj_s_pos_num_donor_vis, 
+                               aes(x=v, y=j, fill=num_donor)) +
+    # white border with thickness
+    geom_tile(color="white", size=0.25) +
+    # remove x and y axis labels
+    labs(x="", y="")+
+    # remove extra space
+    scale_y_discrete(expand=c(0,0)) +
+    scale_x_discrete(expand=c(0,0)) +
+    # colour scale
+    scale_fill_manual(values=palette_num_donor) +
+    # set a base size for all fonts
+    theme_grey(base_size=8) +
+    # theme
+    theme(
+        # remove legend title
+        legend.title=element_blank(),
+        # legend size
+        legend.key.size=unit(0.25, "cm"),
+        # remove plot background
+        plot.background=element_blank(),
+        # remove plot border
+        panel.border=element_blank(),
+        # remove ticks
+        axis.ticks=element_blank(),
+        # rotate x axis label
+        axis.text.x=element_text(angle=90, hjust=1, vjust=0.5),
+        # margin
+        plot.margin=margin(0.05,0,0,0,"cm") # TRBL
+    )
+
+ggsave(hm_vj_s_pos_num_donor, filename="ed_fig_2f.pdf",
+       height=1.5, width=6, units="in")
+```
+
+# S-specificy on UMAPs
+
+* Extended Data Fig 2h
+
+```{r}
+### prep
+
+# UMAP coordinates
+gex_umap_zz = gzfile(paste0("./assets/", fn_umap),'rt')
+gex_umap = read.table(gex_umap_zz, header=T, sep="\t", stringsAsFactors=F)
+close(gex_umap_zz)
+
+# match up cells in `db` with those in `gex_umap`
+idx = match(db[["cell_id"]], gex_umap[["cell_id"]])
+
+bool_idx_non_na = !is.na(idx)
+
+# sanity check
+stopifnot(all.equal( db[["cell_id"]][bool_idx_non_na],
+                     gex_umap[["cell_id"]][ idx[bool_idx_non_na] ] ))
+
+# create a column indicating whether a cell in `gex_umap` belonged to 
+# a S+ B cell clone
+gex_umap[[col_s_pos_clone]] = F
+gex_umap[[col_s_pos_clone]][ idx[bool_idx_non_na] ] = T
+
+# visualization configs
+col_rest = "gray70"
+cex_rest = 0.2
+col_pos = "firebrick2"
+cex_pos_combined = 0.2
+#cex_pos_by_donor = 0.3
+cex_pos_by_donor = 0.2
+
+
+### combining participants
+
+# print out absolute counts and percentages
+fn = "ed_fig_2h_combined_counts.txt"
+sink(fn)
+tab = table(gex_umap[[col_anno]], gex_umap[[col_s_pos_clone]], useNA="ifany")
+print(tab)
+cat("\n*** % ***\n")
+print(t(apply(tab, 1, function(x){x/sum(x)*100})))
+sink()
+
+# visualize
+fn = "ed_fig_2h_combined.png"
+png(fn, width=1000, height=1000, res=150)
+par(mar=c(0.5,0.5,0.5,0.5)) # BLTR
+
+# TRUE if in S+ clones
+bool_pos = gex_umap[[col_s_pos_clone]]
+
+plot(x=gex_umap[["umap_x"]][!bool_pos], 
+     y=gex_umap[["umap_y"]][!bool_pos], 
+     pch=16,
+     cex=cex_rest, col=col_rest,
+     xaxt="n", yaxt="n", xlab="", ylab="", bty="n")
+points(x=gex_umap[["umap_x"]][bool_pos], 
+       y=gex_umap[["umap_y"]][bool_pos], 
+       pch=16,
+       cex=cex_pos_combined, col=col_pos)
+
+dev.off()
+
+
+### by participant
+
+# print out absolute counts and percentages
+fn = "ed_fig_2h_by_donor_counts.txt"
+sink(fn)
+tab = table(gex_umap[[col_anno]], gex_umap[[col_s_pos_clone]], 
+            gex_umap[[col_donor]], useNA="ifany")
+print(tab)
+cat("\n*** % ***\n")
+for (i in 1:dim(tab)[3]) {
+    cat("\n")
+    print(t(apply(tab[,,i], 1, function(x){x/sum(x)*100})))
+}
+sink()
+
+# visualize
+
+n_plot_per_row = 4
+n_row = ceiling(length(DONORS)/n_plot_per_row)
+
+fn = "ed_fig_2h_by_donor.png"
+png(fn, width=400*n_plot_per_row, height=400*n_row, res=150)
+
+par(mar=c(0.5,0.5,2,0.5), # BLTR
+    mfrow=c(n_row, n_plot_per_row))
+
+for (d in DONORS) {
+    
+    bool_d_pos  = gex_umap[[col_donor]]==d & gex_umap[[col_s_pos_clone]]
+    bool_d_rest = gex_umap[[col_donor]]==d & !gex_umap[[col_s_pos_clone]]
+    
+    plot(x=gex_umap[["umap_x"]][bool_d_rest], 
+         y=gex_umap[["umap_y"]][bool_d_rest], 
+         pch=16,
+         cex=cex_rest, col=col_rest,
+         xaxt="n", yaxt="n", xlab="", ylab="", bty="n",
+         main=d)
+    points(x=gex_umap[["umap_x"]][bool_d_pos], 
+           y=gex_umap[["umap_y"]][bool_d_pos], 
+           pch=16,
+           cex=cex_pos_by_donor, col=col_pos)
+}
+
+dev.off()
+
+```
+
+# Isotype distribution
+
+* Extended Data Fig 3e
+
+*The code-generated plot from below was a prototype based on which the published 
+version was generated using GraphPad Prism v9.*
+
+```{r}
+# isotypes to visualize and their colours
+uniq_iso = paste0("IGH", c("G","A","M","D"))
+uniq_iso_col = c("IGHG"="dodgerblue2", "IGHA"="firebrick2",
+                 "IGHM"="forestgreen", "IGHD"="hotpink")
+
+# definition of "early" and "late" timepoints for GC B cell
+timepoint_gc_early = c("d28", "d35", "d60")
+timepoint_gc_late  = c("d110", "d201")
+
+# subset data to GC B cell compartment
+idx_gc = which(db[[col_comp]]=="GC")
+db_gc = db[idx_gc, ]
+
+# tabulate isotypes of sequences from "early" GC B cell compartment, by participant
+iso_gc_by_donor_early = t(sapply(DONORS, function(d){
+    sapply(uniq_iso, function(i){
+        sum(db_gc[[col_iso]]==i & db_gc[[col_donor]]==d &
+            db_gc[[col_tp_2]] %in% timepoint_gc_early)
+    })
+}))
+rownames(iso_gc_by_donor_early) = paste0(rownames(iso_gc_by_donor_early), "_E")
+
+# tabulate isotypes of sequences from "late" GC B cell compartment, by participant
+iso_gc_by_donor_late = t(sapply(DONORS, function(d){
+    sapply(uniq_iso, function(i){
+        sum(db_gc[[col_iso]]==i & db_gc[[col_donor]]==d &
+            db_gc[[col_tp_2]] %in% timepoint_gc_late)
+    })
+}))
+rownames(iso_gc_by_donor_late) = paste0(rownames(iso_gc_by_donor_late), "_L")
+
+# combine "early" and "late"
+iso_gc = rbind(iso_gc_by_donor_early, iso_gc_by_donor_late)
+
+# reorder the rows into the following order:
+# subj_1, early
+# subj_1, late
+# subj_2, early ...
+iso_gc = iso_gc[order(rownames(iso_gc)), ]
+
+# convert absolute counts into percentages
+iso_gc_perc = t(apply(iso_gc, 1, function(x){ x/sum(x)*100 }))
+
+# sanity check
+# expect all summation results to be 100, except NaN where there's no data
+rowSums(iso_gc_perc)
+
+# visualize
+fn = "ed_fig_3e.pdf"
+pdf(fn, width=6, height=4)
+par(mar=c(6,4.5,0,0)) # BLTR
+barplot_2(tab=iso_gc_perc, vec_ylim=c(0,105), col_bar=uniq_iso_col, 
+          cex.text=0.6, cex.lab=1,
+          ylab="Percent of S-binding GC B cells",
+          vec_labels=as.character(rowSums(iso_gc)))
+dev.off()
+```
+
