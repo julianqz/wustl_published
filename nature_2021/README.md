@@ -1,6 +1,6 @@
 # Code associated with Turner & O'Halloran et al., *Nature*, 2021
 
-The R notebook [`analysis_bcr`](./analysis_bcr.Rmd) is for reproducing the figures and analyses that were based on NGS data in [Turner & O'Halloran et al., *Nature*, 2021](https://doi.org/10.1038/s41586-021-03738-2). The corresponding [html](./analysis_bcr.nb.html) provides a finished look of the notebook *when opened in a web browser*.
+The R notebook [`analysis_bcr.Rmd`](./analysis_bcr.Rmd) is for reproducing the figures and analyses that were based on NGS data in [Turner & O'Halloran et al., *Nature*, 2021](https://doi.org/10.1038/s41586-021-03738-2). The corresponding [html](./analysis_bcr.nb.html) provides a finished look of the notebook *when opened in a web browser*.
 
 *Note: The code here generates the core essence of the figures. For the published versions, finer aesthetic details such as text labels and legends were finalized in Adobe Illustrator by co-author JS Turner.*
 
