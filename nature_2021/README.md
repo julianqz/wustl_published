@@ -8,7 +8,7 @@ The R notebook [`analysis_bcr.Rmd`](./analysis_bcr.Rmd) is for reproducing the f
 
 ### 1) Directory structure
 
-The scripts assume the following directory structure:
+The R notebook assumes the following directory structure:
 
 ```
 .
@@ -43,7 +43,7 @@ To run `analysis_bcr`, use the following R container with specific versions of p
 
 `docker pull julianqz/wu_pub:r_4.1.0`
 
-Of course, you don't have to use the container. However, reproducibility cannot be guaranteed without using the same versions of the packages/libraries as in the containers.
+Of course, you don't have to use the container. However, reproducibility cannot be guaranteed without using the same versions of the packages/libraries as in the container.
 
 * `wu_pub:r_4.1.0`: R 4.1.0, igraph 1.2.5, vioplot 0.3.6
 
