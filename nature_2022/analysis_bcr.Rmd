@@ -17,6 +17,9 @@ Minor differences in terminology
 # Load packages & helper functions
 
 ```{r}
+# modify the next line to set working directory accordingly
+# setwd("[insert_your_working_directory_here]")
+
 # summarize_clone
 source("./c2b2/bcr_clone_info.R")
 
