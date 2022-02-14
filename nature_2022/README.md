@@ -2,9 +2,9 @@
 
 These scripts are for reproducing the figures and analyses that were based on NGS data in [Kim & Zhou et al., *Nature*, 2022]().
 
-[`analysis_gex`](./analysis_gex.html) covers gene expression analysis.
+[`analysis_gex`](./analysis_gex.ipynb) covers gene expression analysis.
 
-[`analysis_bcr`](./analysis_bcr.nb.html) covers BCR repertoire analysis.
+[`analysis_bcr`](./analysis_bcr.Rmd) covers BCR repertoire analysis.
 
 *Note: The code here generates the core essence of the figures. For the published versions, finer aesthetic details such as text labels and legends were finalized in Adobe Illustrator by co-author W Kim.*
 
@@ -68,4 +68,4 @@ Of course, you don't have to use these containers. However, reproducibility cann
 
 ## Contact
 
-For questions, feel free to [open an issue](https://github.com/julianqz/wustl_published/issues) on GitHub or email `jqzhou` at `wustl` dot `edu`.
+For questions, feel free to [open an issue](https://github.com/julianqz/wustl_published/issues) on GitHub or drop a line at `jqzhou` at `wustl` dot `edu`.
