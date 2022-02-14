@@ -1,0 +1,379 @@
+---
+title: "Turner & O’Halloran et al., *Nature*, 2021"
+output: html_notebook
+---
+
+Bulk BCR-seq
+
+Author: Julian Q. Zhou
+
+Docker container: `julianqz/wu_pub:r_4.1.0`
+
+Visualizations are outputted as pdfs.
+
+
+# Load packages & helper functions
+
+```{r}
+# modify the next line to set working directory accordingly
+# setwd("[insert_your_working_directory_here]")
+
+# get_bcr_network
+source("./c2b2/bcr_graphs.R")
+
+# scale_values, mystar
+source("./c2b2/misc_ops.R")
+
+# vioplotLst
+source("./c2b2/vis_vioplot.R")
+```
+
+```{r}
+library(igraph)
+library(vioplot)
+```
+
+```{r}
+versions::installed.versions(c("igraph", "vioplot"))
+```
+
+
+# Setup
+
+```{r}
+# filenames
+fn_db = "WU368_turner_et_al_nature_2021_bcr.tsv.gz"
+fn_nat = "mufreq_turner_et_al_nature_2020.tsv.gz"
+
+# column names
+col_clone = "clone_id"
+col_mab_clone = "mab_clone"
+col_seq_id = "sequence_id"
+col_seq_type = "seq_type"
+col_cdr3 = "cdr3"
+col_mf = "nuc_RS_freq_19_312"
+col_size = "duplicate_count"
+col_donor = "donor"
+
+# Hamming distance threshold for computing edges in networks
+threshold = 0.15
+
+# participant IDs
+DONORS = paste0("368-", c("07", "20", "22"))
+
+# sequence IDs of heavy chains of cross-reactive S-binding mAbs
+mab_cross = c("368-22_m3_2021-05-22@368.22.28.GC.1B08.HC", 
+              "368-22_m3_2021-05-22@368.22.28.GC.1G10.HC", 
+              "368-22_m3_2021-05-22@368.22.28.GC.1C02.HC")
+```
+
+
+# Load BCR Data
+
+```{r}
+# processed BCR data from Turner & O’Halloran et al., Nature, 2021
+db_zz = gzfile(fn_db,'rt')
+db = read.table(db_zz, header=T, sep="\t", stringsAsFactors=F)
+close(db_zz)
+
+# db contains B cell clones from all donors
+# The same clone ID could exist in two different donors
+# But those are two separate clones
+# Make that distinction by appending donor ID in front of $clone_id
+db[[col_clone]] = paste0(db[[col_donor]], "@", db[[col_clone]])
+
+# clone IDs of clones containing S-binding mAbs
+clones_mab = unique(db[[col_clone]][db[[col_seq_type]]=="mab"])
+
+# TRUE if a sequence is in a mAb clone
+db[[col_mab_clone]] = db[[col_clone]] %in% clones_mab
+```
+
+
+```{r}
+# Recalculate SHM frequency to avoid numerical problems affecting $nuc_RS_freq_19_312
+# that arise from writing and reading tsv's
+
+# E.g. a "0.013108614" could become "0.013108615" after being exported and read back in
+
+# Doing so ensures that the exact p-values can be reproduced
+db[[col_mf]] = db[["nuc_RS_19_312"]] / db[["nuc_denom_19_312"]]
+```
+
+
+```{r}
+# SHM frequency data from Turner & Zhou & Han et al., Nature, 2020
+db_nat_zz = gzfile(paste0("./assets/", fn_nat),'rt')
+db_nat = read.table(db_nat_zz, header=T, sep="\t", stringsAsFactors=F)
+close(db_nat_zz)
+
+# extract SHM frequency of the naive compartment
+nat_naive = db_nat[["MF"]][db_nat[["SUBSET"]]=="Naive"]
+```
+
+
+# Visualization of B cell clones 
+
+* Fig 3b
+* Extended Data Fig 3b
+
+### Fig 3b (Participants 07, 22) & Extended Data Fig 3b (Participant 20)
+
+```{r}
+### prep
+
+# add star to shapes
+# set border to transparent
+add_shape("star", clip=shape_noclip, plot=mystar, 
+          parameters=list(vertex.norays=5, vertex.frame.color="transparent"))
+
+
+# global range of col_size
+
+lst_size = vector(mode="list", length=length(DONORS))
+names(lst_size) = DONORS
+
+for (d in DONORS) {
+    # subset to mAb clones
+    db_mab = db[db[[col_donor]]==d & db[[col_mab_clone]], ]
+    stopifnot(nrow(db_mab)>0)
+    
+    lst_size[[d]] = db_mab[[col_size]]
+}
+
+# [1, 40]
+(global_range_size = range(unlist(lst_size), na.rm=T))
+
+
+### visualize
+
+# For the published version, mAb IDs were not printed by code; instead, they 
+# were added next to each clone later in Adobe Illustrator.
+# However, it would help to know the mAb to which each clone corresponds
+# Toggle ``print_mab_ids to generate plots with or without mAb IDs printed
+
+print_mab_ids = FALSE
+#print_mab_ids = TRUE
+
+for (d in DONORS) {
+    
+    cat("\n", d, "\n")
+    
+    # subset to mAb clones
+    db_mab = db[db[[col_donor]]==d & db[[col_mab_clone]], ]
+    stopifnot(nrow(db_mab)>0)
+    
+    # simplify sequence ID of mAb heavy chains
+    # E.g.:
+    # before: "368-07_m1_2021-05-22@368.07.28.GC.2C08.HC"
+    # after: 2C08
+    mab_ids = sapply(db[[col_seq_id]][db[[col_seq_type]]=="mab" & db[[col_donor]]==d],
+                     function(s){ strsplit(s, "\\.")[[1]][5] }, USE.NAMES=F)
+    
+    ### generate network
+    
+    g = get_bcr_network(db=db_mab, col_clone=col_clone, col_seq=col_cdr3, 
+                        threshold=threshold, nt_or_aa="nt", 
+                        bool_norm=T, bool_mst=T)
+    
+    ### configure network aesthetics
+    
+    ## vertices
+    
+    # label mAbs?
+    if (print_mab_ids) {
+        V(g)$label[db_mab[[col_seq_type]]=="mab"] = mab_ids
+    } else {
+        V(g)$label = rep("", length(V(g)))
+    }
+    
+    ## shape
+    # ?igraph::shapes
+    
+    # by isotype
+    shape_uniq = c("IGHG"="circle", "IGHA"="star", "IGHM"="square")
+    stopifnot(all(db_mab[["isotype"]] %in% names(shape_uniq)))
+    
+    vec_shapes = shape_uniq[db_mab[["isotype"]]]
+    V(g)$shape = vec_shapes
+    
+    ## color
+    
+    col_color = "sorting"
+    color_uniq = c("GC"="blue", "PB"="red", "IgDlo"="darkgoldenrod2")
+    
+    vec_color = color_uniq[db_mab[[col_color]]]
+    names(vec_color) = NULL
+    V(g)$color = vec_color
+    
+    # special shade of blue for mAbs (all mAbs are GC per experimental design)
+    V(g)$color[db_mab[[col_seq_type]]=="mab"] = "cyan"
+    
+    ## border
+    V(g)$frame.color = "transparent"
+    
+    ## size
+    
+    # there could be NA in col_size
+    # convert any NA to 1
+    vec_size = ifelse(is.na(db_mab[[col_size]]), 1, db_mab[[col_size]])
+    print(summary(vec_size))
+    
+    # convert to be on a scale that is common amongst all donors
+    # with keep_NA=F, any NA would be set to min_scale
+    vec_scale = scale_values(vec_orig=vec_size, 
+                             max_orig=global_range_size[2],
+                             min_orig=global_range_size[1],
+                             max_scale=12.5, min_scale=4.5, keep_NA=FALSE)
+    print(summary(vec_scale))
+    
+    V(g)$size = vec_scale
+    
+    ## edges
+    
+    E(g)$color = "gray85"
+    
+    ## layout
+    
+    # defaults to layout_nicely
+    coords=NULL
+    
+    ### plot
+    
+    fn_p = paste0("network_", d, ".pdf")
+    pdf(fn_p, width=5, height=5)
+    par(mar=c(0.2,0.2,0.2,0.2)) # BLTR
+    
+    set.seed(8475240)
+    plot(g, layout=coords)
+    box()
+    
+    dev.off()
+    
+    # clean up
+    rm(g, db_mab, mab_ids, vec_scale)
+}
+
+```
+
+
+# Visualization of SHM frequency
+
+* Fig 3c
+* Fig 3d
+
+*The code-generated plots from below were prototypes based on which the published 
+versions were generated using GraphPad Prism v8.*
+
+### Fig 3c (Naive vs. S-binding Clones)
+
+```{r}
+### prep
+
+# get SHM frequency of mAb clones in each donor
+
+# list of data.frames
+# each data.frame corresponds to a donor
+# (this format helps with plotting cross vs. non-cross reactive later)
+lst_df = vector(mode="list", length=length(DONORS))
+names(lst_df) = DONORS
+
+for (d in DONORS) {
+    # clone IDs of mAb clones from current donor
+    clones_mab = unique(db[[col_clone]][db[[col_seq_type]]=="mab" & db[[col_donor]]==d])
+    stopifnot(length(clones_mab)>0)
+    
+    cur_db = db[db[[col_clone]] %in% clones_mab,
+                c(col_donor, col_clone, col_mf, col_seq_id)]
+    
+    lst_df[[d]] = cur_db
+}
+
+# list of vectors
+# each vector contains SHM frequencies from a different donor
+lst_mf = lapply(lst_df, function(x){ x[[col_mf]] })
+
+# config plot
+global_mf_range = range(c(unlist(lst_mf), nat_naive), na.rm=T)
+
+lst_all = c(list("Naive"=nat_naive), lst_mf)
+
+
+### visualize
+
+fn_p = "fig_3c.pdf"
+
+pdf(fn_p, width=5, height=5)
+par(mar=c(2.7,4.5,0.2,0.2)) # BLTR
+
+set.seed(9375243)
+vioplotLst(vecLst=lst_all, vioYmax=global_mf_range[2]*1.05, vioYmin=0, 
+           xLas=1, yLas=2, 
+           xNames=names(lst_all), xTick=TRUE, xlab="", 
+           ylab="Nucleotide mutation frequency in IGHV", title="", 
+           countCex=0.7, xaxisCex=0.85, yaxisCex=1, mainCex=1.2,
+           yHoriz=NULL, yHorizCol="firebrick2",
+           vioBkgCol=NA, vioMedCol="hotpink", vioRecCol="darkgoldenrod2",
+           vioMedPch=18, vioMedStyle="point", vioBoxWidth=0.2, vioWhiskerCol="black",
+           useBoxplot=T, showPoints=T, 
+           pointsPch=rep(16, length(lst_all)), 
+           pointsCol=c("gray70", "forestgreen", "purple", "purple", "purple"), 
+           pointsCex=0.3, 
+           pointsJitterAmount=0.4, pointsJitterBool=TRUE)
+
+dev.off()
+
+# "Kruskal–Wallis test with Dunn’s post-test between naive B cells and 
+# S-binding clones" performed in GraphPad Prism v8
+```
+
+
+### Fig 3d (Cross-reactive vs. Non-cross-reactive S-binding clones)
+
+```{r}
+### prep
+
+df_mf = do.call(rbind, lst_df)
+
+# verify that all cross-reactive S-binding mAbs are in db
+stopifnot(all(mab_cross %in% df_mf[[col_seq_id]]))
+
+# clones containing cross-reactive mAbs
+mab_cross_clones = unique(df_mf[[col_clone]][match(mab_cross, df_mf[[col_seq_id]])])
+
+# TRUE if a sequence is in one of the clones containing cross-reactive mAbs
+bool_cross_clones = df_mf[[col_clone]] %in% mab_cross_clones
+
+lst_mf_2 = list("Cross-reactive"=df_mf[[col_mf]][bool_cross_clones],
+                "Non-cross-reactive"=df_mf[[col_mf]][!bool_cross_clones])
+
+
+### visualize
+
+fn_p = "fig_3d.pdf"
+pdf(fn_p, width=5, height=5)
+par(mar=c(2.7,4.5,0.2,0.2)) # BLTR
+
+set.seed(9375243)
+vioplotLst(vecLst=lst_mf_2, vioYmax=global_mf_range[2]*1.05, vioYmin=0, 
+           xLas=1, yLas=2, 
+           xNames=names(lst_mf_2), xTick=TRUE, xlab="", 
+           ylab="Nucleotide mutation frequency in IGHV", title="", 
+           countCex=0.7, xaxisCex=0.85, yaxisCex=1, mainCex=1.2,
+           yHoriz=NULL, yHorizCol="firebrick2",
+           vioBkgCol=NA, vioMedCol="hotpink", vioRecCol="darkgoldenrod2",
+           vioMedPch=18, vioMedStyle="point", vioBoxWidth=0.2, vioWhiskerCol="black",
+           useBoxplot=T, showPoints=T, 
+           pointsPch=rep(16, length(lst_mf_2)), 
+           pointsCol=c("gray70", "gray70"), #* 
+           pointsCex=0.3, 
+           pointsJitterAmount=0.4, pointsJitterBool=TRUE)
+
+dev.off()
+
+# Mann-Whitney
+# 9.410932e-30
+wilcox.test(x=lst_mf_2[["Cross-reactive"]], y=lst_mf_2[["Non-cross-reactive"]], 
+            alternative="two.sided", paired=F)$p.value
+```
+
