@@ -1,6 +1,6 @@
 # Code associated with Kim & Zhou et al., *Nature*, 2022
 
-These scripts are for reproducing the figures and analyses that were based on NGS data in [Kim & Zhou et al., *Nature*, 2022]().
+These scripts are for reproducing the figures and analyses that were based on NGS data in [Kim & Zhou et al., *Nature*, 2022](https://doi.org/10.1038/s41586-022-04527-1).
 
 The JupyterLab notebook [`analysis_gex.ipynb`](./analysis_gex.ipynb) with its output [html](./analysis_gex.html) cover gene expression analysis.
 
