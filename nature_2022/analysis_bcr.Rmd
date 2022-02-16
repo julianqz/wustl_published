@@ -186,7 +186,7 @@ compartment-timepoint combination
 * The length of an arc corresponds to the number of BCR sequences 
 represented by the arc
 * Chords connect clonally related sequences
-* The width of a chord corresponds to the size of the size represented 
+* The width of a chord corresponds to the size of the clone represented 
 by the chord
 * Chords are coloured based on whether there's "overlap"
 * Overlap can be defined as overlap between compartments, between 
