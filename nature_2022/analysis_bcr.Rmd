@@ -183,10 +183,10 @@ the arcs correspond to the rows in the printed table from top to bottom.
 
 * An arc represents BCR sequences from a B cell compartment or 
 compartment-timepoint combination
-* The length of an arc length corresponds to the number of BCR sequences 
+* The length of an arc corresponds to the number of BCR sequences 
 represented by the arc
 * Chords connect clonally related sequences
-* The width of a chord width corresponds to the size of the size represented 
+* The width of a chord corresponds to the size of the size represented 
 by the chord
 * Chords are coloured based on whether there's "overlap"
 * Overlap can be defined as overlap between compartments, between 
@@ -1147,7 +1147,7 @@ for (i_cl in 1:length(vec_tree_clones)) {
 ### prep
 
 # For each unique clone ID in `clone_info`, find a match in `db`
-# No need to find al matches in `db` since by design all sequences from the same
+# No need to find all matches in `db` since by design all sequences from the same
 # clone would have the same clonal consensus germline annotations
 idx_cl = match(clone_info[[col_clone_id]], db[[col_clone_id]])
 # sanity checks
