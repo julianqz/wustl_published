@@ -30,7 +30,7 @@ The scripts assume the following directory structure:
 
 The `WU382_` files contain processed NGS data and can be downloaded from [Zenodo](https://doi.org/10.5281/zenodo.7719030).
 
-`gex_b_cell_umap.tsv.gz` is generated at the end of `analysis_betaDelta_gex`. A copy is provided on Zenodo in case any one would like to skip downloading the `h5ad` files or running `analysis_betaDelta_gex`.
+`gex_b_cell_umap.tsv.gz` is generated at the end of `analysis_betaDelta_gex` for use in conjunction with `analysis_betaDelta_bcr`. A copy is provided on Zenodo in case any one would like to skip downloading the `h5ad` files or running `analysis_betaDelta_gex`.
 
 
 ### 3) Code from `c2b2`
@@ -46,7 +46,7 @@ This step can be skipped if only `analysis_betaDelta_gex` is to be run.
 
 ### 4) Docker containers
 
-To run `analysis_gex`, use the `cimm` container version `ref_0.1.1_lsf`:
+To run `analysis_betaDelta_gex`, use the `cimm` container version `ref_0.1.1_lsf`:
 
 `docker pull julianqz/wu_cimm:ref_0.1.1_lsf`
 
