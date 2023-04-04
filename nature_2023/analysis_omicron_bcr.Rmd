@@ -1,0 +1,148 @@
+---
+title: "Alsoussi & Malladi et al., *Nature*, 2023 (repertoire; omicron-boosted)"
+output: html_notebook
+---
+
+Author: Julian Q. Zhou
+
+Docker container: `julianqz/wu_pub:r_4.1.0`
+
+Visualizations are outputted as pdfs or pngs.
+
+# Load packages & helper functions
+
+```{r}
+# modify the next line to set working directory accordingly
+# setwd("[insert_your_working_directory_here]")
+
+# vioplotLst
+source("./c2b2/vis_vioplot.R")
+```
+
+```{r}
+versions::installed.versions(c("vioplot"))
+```
+
+
+# Setup
+
+```{r}
+### filenames
+fn_db_om = "WU382_alsoussi_et_al_nature_2023_omicron_bcr_heavy.tsv.gz"
+
+### column names
+
+# B cell clonal lineage ID
+col_clone_id = "clone_id"
+
+# TRUE if a clonal member of a S+ heavy chain-based B cell clone
+col_s_pos_clone = "s_pos_clone"
+
+# For S-binding clones, `WA1+` or `BA1+WA1-`; otherwise `NA`
+col_clone_type = "clone_type"
+
+# replacement and silent mutation frequency
+col_mf = "nuc_RS_freq_19_312"
+
+col_donor = "donor"
+```
+
+
+# Load BCR data
+
+```{r}
+# db_all contains heavy chains from all clones regardless of S specificity
+db_all_zz = gzfile(fn_db_om,'rt')
+db_all = read.table(db_all_zz, header=T, sep="\t", stringsAsFactors=F)
+close(db_all_zz)
+
+# Subset to S+ clones
+db = db_all[db_all[[col_s_pos_clone]], ]
+rm(db_all)
+```
+
+```{r}
+# Recalculate SHM frequency to avoid numerical problems affecting $nuc_RS_freq_19_312
+# that arise from writing and reading tsv's
+
+# E.g. a "0.013108614" could become "0.013108615" after being exported and read back in
+
+# Doing so ensures that the exact p-values reported in the paper can be reproduced
+db[[col_mf]] = db[["nuc_RS_19_312"]] / db[["nuc_denom_19_312"]]
+```
+
+
+# SHM frequency
+
+* Fig 4d
+
+*The code-generated plot from below was a prototype based on which the published 
+version was generated using GraphPad Prism v9.*
+
+```{r}
+### Prep
+
+# Create a data.frame
+
+# Each row corresponds to a unique clone
+vec_uniq_cl = unique(db[[col_clone_id]])
+
+# Columns to include:
+vec_df_cl_col = c(col_donor, col_clone_id, col_clone_type, col_mf)
+
+df_cl = data.frame(matrix(NA, nrow=length(vec_uniq_cl), ncol=length(vec_df_cl_col)))
+colnames(df_cl) = vec_df_cl_col
+
+# Derive participant IDs from clone IDs
+df_cl[[col_donor]] = sapply(vec_uniq_cl, function(s){strsplit(s,"@")[[1]][1]}, USE.NAMES=F)
+
+# Fill in $clone_id column
+df_cl[[col_clone_id]] = vec_uniq_cl 
+
+for (i in 1:nrow(df_cl)) {
+    cur_cl = df_cl[[col_clone_id]][i]
+    
+    # wrt db
+    cur_idx_db = which(db[[col_clone_id]]==cur_cl)
+    stopifnot(length(cur_idx_db)>0)
+    
+    # $clone_type
+    cur_cl_type = unique(db[[col_clone_type]][cur_idx_db])
+    stopifnot(length(cur_cl_type)==1)
+    df_cl[[col_clone_type]][i] = cur_cl_type
+    
+    # median mutation frequency of clonal members
+    df_cl[[col_mf]][i] = median(db[[col_mf]][cur_idx_db])
+}
+
+# sanity check: expect no NA
+stopifnot(!any(is.na(df_cl)))
+
+# breakdown of clones by $clone_type
+# BA1+WA1-     WA1+ 
+#        6      357
+table(df_cl[[col_clone_type]], useNA="ifany")
+```
+
+```{r}
+### visualization
+
+# subset to 382-54/55
+df_cl = df_cl[df_cl[[col_donor]] %in% c("382-54", "382-55"), ]
+
+# visualize by $clone_type
+vis_lst = list("WA1/2020+"=df_cl[[col_mf]][df_cl[[col_clone_type]]=="WA1+"],
+               "BA.1+WA1-"=df_cl[[col_mf]][df_cl[[col_clone_type]]=="BA1+WA1-"])
+
+set.seed(289375)
+pdf("fig_4d_prototype.pdf", width=5, height=5)
+par(mar=c(2,3,1,1))
+vioplotLst(vecLst=vis_lst, xNames=names(vis_lst), xLas=1,
+           useBoxplot=TRUE, showPoints=TRUE, 
+           pointsPch=c(16,16), pointsCol=c(1,1), pointsJitterAmount=0.25)
+dev.off()
+
+# Mann-Whitney
+wilcox.test(vis_lst[["WA1/2020+"]], vis_lst[["BA.1+WA1-"]])
+```
+
