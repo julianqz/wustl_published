@@ -1,6 +1,8 @@
 ---
 title: "Malladi & Jaiswal et al., *Science Immunology*, 2025 (repertoire)"
-output: html_notebook
+output:
+  html_document:
+    df_print: paged
 ---
 
 Author: Julian Q. Zhou
@@ -8,6 +10,10 @@ Author: Julian Q. Zhou
 Docker container: `julianqz/wu_pub:r_4.1.0`
 
 Visualizations are outputted as pdfs or pngs.
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(eval = FALSE)
+```
 
 # Load packages & helper functions
 
@@ -26,9 +32,6 @@ source("./c2b2/bcr_clonal_overlap_circos_v2.R")
 
 # prep_for_alluv, prep_for_paired_mf, get_stat_paired_mf
 source("./c2b2/bcr_alluvial.R")
-
-# vioplotLst
-source("./c2b2/vis_vioplot.R")
 ```
 
 ```{r}
@@ -47,7 +50,7 @@ versions::installed.versions(c("ggplot2", "circlize", "vioplot"))
 ### filenames
 fn_db = "WU382_malladi_et_al_sci_imm_2025_bcr_heavy.tsv.gz"
 fn_umap = "WU382_malladi_et_al_sci_imm_2025_gex_b_cell_umap.tsv.gz"
-fn_binding = "WU382_malladi_et_al_sci_imm_2025_mab_binding.tsv"
+fn_binding = "WU382_malladi_et_al_sci_imm_2025_mab_binding.tsv.gz"
 
 ### column names
 
@@ -63,15 +66,10 @@ col_clone_id = "clone_id"
 # TRUE if a clonal member of a S+ heavy chain-based B cell clone
 col_s_pos_clone = "s_pos_clone"
 
-
-# transcriptomics-based cluster annotation
-col_anno = "anno_leiden_0.25"
-
 # replacement and silent mutation frequency
 col_mf = "nuc_RS_freq_1_312"
 
 col_tissue = "tissue"
-col_seq_id = "sequence_id"
 col_donor = "donor"
 col_sample = "sample"
 
@@ -84,7 +82,7 @@ DONORS = paste0("382-", c("65","67","69","70","71"))
 
 ```{r}
 # db_all contains heavy chains from all clones regardless of S specificity
-db_all_zz = gzfile(fn_db_bd,'rt')
+db_all_zz = gzfile(fn_db,'rt')
 db_all = read.table(db_all_zz, header=T, sep="\t", stringsAsFactors=F)
 close(db_all_zz)
 
@@ -125,12 +123,206 @@ clone_info[[col_donor]] = sapply(clone_info[[col_clone_id]],
                                  function(s){strsplit(s, "@")[[1]][1]})
 ```
 
+# UMAPs (Fig 2A, right; S2E)
 
-# Circos plots for clonal overlap
+### Prep
 
-* Fig S3
+```{r}
+# UMAP coordinates
+gex_umap_zz = gzfile(paste0("./assets/", fn_umap),'rt')
+gex_umap = read.table(gex_umap_zz, header=T, sep="\t", stringsAsFactors=F)
+close(gex_umap_zz)
 
-`circos_clonal_overlap-v2` produces a circos plot, and prints out (i) the number and
+# match up cells in `db` with those in `gex_umap`
+idx = match(db[["cell_id"]], gex_umap[["cell_id"]])
+
+bool_idx_non_na = !is.na(idx)
+
+# sanity check
+stopifnot(all.equal( db[["cell_id"]][bool_idx_non_na],
+                     gex_umap[["cell_id"]][ idx[bool_idx_non_na] ] ))
+
+# create a column indicating whether a cell in `gex_umap` belonged to 
+# a S+ B cell clone
+gex_umap[[col_s_pos_clone]] = FALSE
+gex_umap[[col_s_pos_clone]][ idx[bool_idx_non_na] ] = TRUE
+
+gex_umap[[col_donor]] = factor(gex_umap[[col_donor]], levels=DONORS)
+
+# the ordering of the points in a ggplot2 plot depends on 
+# the ordering of the rows of the input data
+# later rows are plotted later
+
+# put $s_pos_clone TRUE after FALSE
+# order() not affected by factor levels
+# with order(), FALSE comes before TRUE
+gex_umap = gex_umap[order(gex_umap[[col_s_pos_clone]]), ]
+
+gex_umap[[col_s_pos_clone]] = factor(gex_umap[[col_s_pos_clone]],
+                                     levels=c(TRUE, FALSE))
+
+# visualization configs
+umap_xlim = range(gex_umap[["umap_x"]]) * c(1.05, 1.05)
+umap_ylim = range(gex_umap[["umap_y"]]) * c(1.05, 1.05)
+
+g_size_s_pos = 1.25
+```
+
+
+### Fig 2A, right - S+
+
+```{r}
+g = ggplot(data=gex_umap,
+           mapping=aes(x=umap_x, y=umap_y)) +
+    geom_point(aes(color=s_pos_clone, size=s_pos_clone), 
+               alpha=0.7, stroke=0) +
+    scale_color_manual(values=c("TRUE"="red", "FALSE"="gray")) +
+    scale_size_manual(values=c("TRUE"=g_size_s_pos, "FALSE"=1)) +
+    xlim(umap_xlim) +
+    ylim(umap_ylim) +
+    theme_bw() +
+    theme(axis.title.x=element_blank(),   
+          axis.text.x=element_blank(),    
+          axis.ticks.x=element_blank()) + 
+    theme(axis.title.y=element_blank(),   
+          axis.text.y=element_blank(),    
+          axis.ticks.y=element_blank()) + 
+    theme(legend.position="none") + 
+    theme(panel.grid.major=element_blank()) + 
+    theme(panel.grid.minor=element_blank())  
+
+fn = "fig_2A_right.png"
+ggsave(filename=fn, plot=g, bg="transparent", 
+       device="png", width=4, height=4, units="in")
+rm(g)
+```
+
+
+### Fig S2E - S+, by participant
+
+```{r}
+g = ggplot(data=gex_umap,
+           mapping=aes(x=umap_x, y=umap_y)) +
+    geom_point(aes(color=.data[[col_s_pos_clone]], size=.data[[col_s_pos_clone]]), 
+               alpha=0.7, stroke=0) +
+    scale_color_manual(values=c("TRUE"="red", "FALSE"="gray")) +
+    scale_size_manual(values=c("TRUE"=1.2, "FALSE"=0.8)) +
+    facet_wrap(facets=vars(.data[[col_donor]]), nrow=2) +
+    theme_bw() +
+    theme(strip.background=element_rect(fill="transparent"),
+          strip.text=element_text(size=13)) +
+    theme(axis.title.x=element_blank(),   
+          axis.text.x=element_blank(),    
+          axis.ticks.x=element_blank()) + 
+    theme(axis.title.y=element_blank(),   
+          axis.text.y=element_blank(),    
+          axis.ticks.y=element_blank()) + 
+    theme(legend.position="none") + 
+    theme(panel.grid.major=element_blank()) 
+
+fn = "fig_S2E.png"
+ggsave(filename=fn, plot=g, bg="transparent", 
+       device="png", width=9, height=6, units="in")
+rm(g)
+```
+
+# V gene usage (Fig S2F)
+
+```{r}
+# add germline consensus v/j calls to clone_info
+idx_cl_h = match(clone_info[[col_clone_id]], db[[col_clone_id]])
+stopifnot(!any(is.na(idx_cl_h)))
+stopifnot(all.equal(clone_info[[col_clone_id]], db[[col_clone_id]][idx_cl_h]))
+clone_info[["h_germline_v_call"]] = db[["germline_v_call"]][idx_cl_h]
+clone_info[["h_germline_j_call"]] = db[["germline_j_call"]][idx_cl_h]
+
+# tabulate IGHV usage at the clone-level
+lst_vj_h = tabulate_vj(vec_v=clone_info[["h_germline_v_call"]], 
+                       vec_j=clone_info[["h_germline_j_call"]], 
+                       vec_subj=clone_info[[col_donor]],
+                       anno_separator=",")
+
+# prep a list of data.frame for vis
+# x-axis: IGHV
+# y-axis: participant
+# heatmap: num of clones
+
+lst_v_common_h = vector(mode="list", length=length(DONORS))
+names(lst_v_common_h) = DONORS
+
+for (cur_d in DONORS) {
+    cur_tab = lst_vj_h[["common"]][[cur_d]]
+    cur_vec_uniq_v = unique(cur_tab[["v"]])
+    
+    cur_vec_cols_df = c("subj", "v", "count")
+    cur_df = data.frame(matrix(NA, nrow=length(cur_vec_uniq_v),
+                               ncol=length(cur_vec_cols_df)))
+    colnames(cur_df) = cur_vec_cols_df
+    
+    cur_df[["subj"]] = cur_d
+    for (i_row in 1:nrow(cur_df)) {
+        cur_v = cur_vec_uniq_v[i_row]
+        cur_df[["v"]][i_row] = cur_v
+        cur_df[["count"]][i_row] = sum( cur_tab[["count"]][cur_tab[["v"]]==cur_v] )
+    }
+    stopifnot( sum(cur_df[["count"]]) == sum(cur_tab[["count"]]) )
+    
+    lst_v_common_h[[cur_d]] = cur_df
+}
+
+df_v_common_h = do.call(rbind, lst_v_common_h)
+rownames(df_v_common_h) = NULL
+
+stopifnot(sum(df_v_common_h[["count"]])==nrow(clone_info))
+
+# vis
+
+# https://colorbrewer2.org/#type=sequential&scheme=GnBu&n=9
+palette_num_donor = c('#f7fcf0','#e0f3db','#ccebc5','#a8ddb5','#7bccc4','#4eb3d3','#2b8cbe','#0868ac','#084081')
+
+g = ggplot(df_v_common_h, 
+    aes(x=v, y=subj, fill=count)) +
+    # white border with thickness
+    geom_tile(color="white", size=0.25) +
+    # remove x and y axis labels
+    labs(x="", y="")+
+    # remove extra space
+    scale_y_discrete(expand=c(0,0)) +
+    scale_x_discrete(expand=c(0,0)) +
+    # color scale
+    scale_fill_gradient(low=palette_num_donor[1], high=palette_num_donor[9]) +
+    # set a base size for all fonts
+    theme_grey(base_size=8) +
+    # theme
+    theme(
+        #legend.position=c(1.02,0.1), 
+        # remove legend title
+        legend.title=element_blank(),
+        # legend size
+        legend.key.size=unit(0.25, "cm"),
+        # remove plot background
+        plot.background=element_blank(),
+        # remove plot border
+        panel.border=element_blank(),
+        # remove ticks
+        axis.ticks=element_blank(),
+        # rotate x axis label
+        axis.text.x=element_text(angle=90, hjust=1, vjust=0.5),
+        # margin
+        plot.margin=margin(0.05,0,0,0,"cm") # TRBL
+)
+
+fn = "fig_S2F.pdf"
+ggsave(g, filename=fn,
+       height=1.5, width=6, units="in")
+rm(g)
+```
+
+
+
+# Clonal overlap across LN and peripheral blood compartments (Fig S3)
+
+`circos_clonal_overlap_v2` produces a circos plot, and prints out (i) the number and
 percentage of clones with clonal overlap, and (ii) the number of sequences.
 
 Starting with the arc at the 12 o'clock position and going clockwise, the identities of 
@@ -146,11 +338,8 @@ represented by the arc
 * The widths of chord ends correspond to the number of sequences from the respective arc
 * Chords are colored based on clonal overlap
 
-### Visualization
 
 ```{r}
-# Fig S3 - clonal overlap across lymph node and peripheral blood compartments
-
 # arcs: compartment-timepoint combinations
 vec_sectors_1 = c("MBC_PBMC_d0", "PB_d8", "GC_d57", "MBC_PBMC_d121")
 
@@ -204,112 +393,25 @@ for (d in DONORS) {
 sink()
 ```
 
-# V gene usage heatmap (Fig S2)
+# GC B cell sequences from S+ clones (Fig S4)
 
-```{r}
-# tabulate IGHV usage at the clone-level
-idx_cl_h = match(clone_info[[col_clone_id]], db[[col_clone_id]])
-stopifnot(!any(is.na(idx_cl_h)))
-stopifnot(all.equal(clone_info[[col_clone_id]], db[[col_clone_id]][idx_cl_h]))
-clone_info[["h_germline_v_call"]] = db[["germline_v_call"]][idx_cl_h]
-clone_info[["h_germline_j_call"]] = db[["germline_j_call"]][idx_cl_h]
-
-lst_vj_h = tabulate_vj(vec_v=clone_info[["h_germline_v_call"]], 
-                       vec_j=clone_info[["h_germline_j_call"]], 
-                       vec_subj=clone_info[[col_donor]],
-                       anno_separator=",")
-
-# x-axis: IGHV
-# y-axis: participant
-# heatmap: num of clones
-
-lst_v_common_h = vector(mode="list", length=length(DONORS))
-names(lst_v_common_h) = DONORS
-
-for (cur_d in DONORS) {
-    cur_tab = lst_vj_h[["common"]][[cur_d]]
-    cur_vec_uniq_v = unique(cur_tab[["v"]])
-    
-    cur_vec_cols_df = c("subj", "v", "count")
-    cur_df = data.frame(matrix(NA, nrow=length(cur_vec_uniq_v),
-                               ncol=length(cur_vec_cols_df)))
-    colnames(cur_df) = cur_vec_cols_df
-    
-    cur_df[["subj"]] = cur_d
-    for (i_row in 1:nrow(cur_df)) {
-        cur_v = cur_vec_uniq_v[i_row]
-        cur_df[["v"]][i_row] = cur_v
-        cur_df[["count"]][i_row] = sum( cur_tab[["count"]][cur_tab[["v"]]==cur_v] )
-    }
-    stopifnot( sum(cur_df[["count"]]) == sum(cur_tab[["count"]]) )
-    
-    lst_v_common_h[[cur_d]] = cur_df
-}
-
-df_v_common_h = do.call(rbind, lst_v_common_h)
-rownames(df_v_common_h) = NULL
-
-stopifnot(sum(df_v_common_h[["count"]])==nrow(clone_info))
-
-# vis
-
-# https://colorbrewer2.org/#type=sequential&scheme=GnBu&n=9
-palette_num_donor = c('#f7fcf0','#e0f3db','#ccebc5','#a8ddb5','#7bccc4','#4eb3d3','#2b8cbe','#0868ac','#084081')
-
-
-g = ggplot(df_v_common_h, 
-                              aes(x=v, y=subj, fill=count)) +
-    # white border with thickness
-    geom_tile(color="white", size=0.25) +
-    # remove x and y axis labels
-    labs(x="", y="")+
-    # remove extra space
-    scale_y_discrete(expand=c(0,0)) +
-    scale_x_discrete(expand=c(0,0)) +
-    # color scale
-    scale_fill_gradient(low=palette_num_donor[1], high=palette_num_donor[9]) +
-    # set a base size for all fonts
-    theme_grey(base_size=8) +
-    # theme
-    theme(
-        #legend.position=c(1.02,0.1), 
-        # remove legend title
-        legend.title=element_blank(),
-        # legend size
-        legend.key.size=unit(0.25, "cm"),
-        # remove plot background
-        plot.background=element_blank(),
-        # remove plot border
-        panel.border=element_blank(),
-        # remove ticks
-        axis.ticks=element_blank(),
-        # rotate x axis label
-        axis.text.x=element_text(angle=90, hjust=1, vjust=0.5),
-        # margin
-        plot.margin=margin(0.05,0,0,0,"cm") # TRBL
-)
-
-fn = "fig_S2F.pdf"
-ggsave(g, filename=fn,
-       height=1.5, width=6, units="in")
-rm(g)
-```
-
-# Isotype
+### Fig S4A - isotype
 
 ```{r}
 vec_uniq_iso = paste0("IGH", c("D","M","A","G"))
 vec_uniq_iso_color = c("IGHM"="darkgoldenrod2", "IGHD"="black",
                        "IGHA"="forestgreen", "IGHG"="hotpink")
+# text label
 vec_uniq_iso_lab = gsub(pattern="^IGH", replacement="Ig", x=vec_uniq_iso)
 
+# tabulate raw counts
 vec_tab_iso_gcb = table(db[[col_iso]][db[[col_comp_tp]]=="GC_d57"],
                         useNA="ifany")[vec_uniq_iso]
-
+# convert to percentage
 vec_tab_iso_gcb_perc = vec_tab_iso_gcb/sum(vec_tab_iso_gcb)*100
 iso_perc_max_plot = 100 
 
-fn = "fig_x_A.pdf"
+fn = "fig_S4A.pdf"
 pdf(fn, width=4, height=4)
 par(mar=c(2,4.5,2,1)) # BLTR
 barplot(vec_tab_iso_gcb_perc,
@@ -318,14 +420,12 @@ barplot(vec_tab_iso_gcb_perc,
         names.arg=vec_uniq_iso_lab, ylab="% of d57 GC B cells",
         main="GC B cell")
 dev.off()
-
 ```
 
-
-# SHM frequency
+### Fig S4B - SHM frequency
 
 ```{r}
-fn = "fig_x_B.pdf"
+fn = "fig_S4B.pdf"
 pdf(fn, width=5, height=5)
 par(mar=c(2,4.5,1,1)) # BLTR
 boxplot(db[[col_mf]][db[[col_comp_tp]]=="PB_d8"],
@@ -335,8 +435,8 @@ boxplot(db[[col_mf]][db[[col_comp_tp]]=="PB_d8"],
         ylab="IGHV nucleotide mutation frequency",
         axes=F)
 axis(2)
-axis(1, tick=F,
-     at=1:3, labels=c("\nd8\nPB", "d57\nGCB",  "d121\nMBC"))
+axis(1, tick=F, at=1:3, 
+     labels=c("\nd8\nPB", "d57\nGCB",  "d121\nMBC"))
 box()
 dev.off()
 
@@ -353,20 +453,18 @@ wilcox.test(db[[col_mf]][db[[col_comp_tp]]=="GC_d57"],
 ```
 
 
-# Clone-wise SHM frequency comparisons between compartments
+### Fig S4C - clone-wise SHM frequency comparisons between compartments
 
-* Fig ? (PB vs. GC B cells)
-
-### How to read the clone-wise SHM frequency plots
+#### How to read the clone-wise SHM frequency plots
 
 * Each line corresponds to a B cell clone
 * Each end of the line corresponds to the median SHM frequency of the clonal 
 members in a given compartment or compartment-timepoint combination
 
-### Preparation
+#### Preparation
 
 ```{r}
-# all compartment-timepoint combinations to consider
+# compartment-timepoint combinations to consider
 alluv_cols = c("PB_d8", "GC_d57")
 
 # regex to extract what labels define overlap
@@ -427,8 +525,7 @@ pairs_df_long = prep_pairs[["pairs_df_long"]]
 pairs_df_long[["hack"]] = factor("dummy")
 ```
 
-
-### Visualization
+#### Visualization
 
 ```{r}
 # y-axis upper limit
@@ -457,7 +554,7 @@ g = ggplot(pairs_df_long,
     theme(legend.position="none") +
     theme(panel.grid.major=element_blank())
 
-fn = "fig_x_C.pdf"
+fn = "fig_S4C.pdf"
 ggsave(filename=fn, plot=g, device="pdf", 
        width=3, height=4) 
 rm(g)
@@ -473,20 +570,27 @@ pairs_p = get_stat_paired_mf(vec_facets=prep_pairs[["vec_facets"]],
                              pairs_df_wide=pairs_df_wide,
                              p_adj_method="BH")
 
+# 0.00160362 
 pairs_p[["vec_p_unadj"]]
 ```
 
 
-# Cell type
+# Cell types in LN and PBMC in functionally distinct B cell clones (Fig S6)
 
 ```{r}
-df_binding = read.table(fn_binding, sep="\t", header=T, stringsAsFactors=F)
+# load binding data
+df_binding_zz = gzfile(paste0("./assets/", fn_binding),'rt')
+df_binding = read.table(df_binding_zz, header=T, sep="\t", stringsAsFactors=F)
+close(df_binding_zz)
 
+# rows indicate the functional characteristics of expressed mAbs
 head(df_binding)
 
 stopifnot(all(df_binding[["HC_ID"]] %in% db_all[[col_expressed_id]]))
 
-### broadly binding
+### locate functionally distinct mAbs wrt df_binding
+
+## broadly binding
 # 1 for all of {WA1_RBD BA1_RBD BQ11_RBD XBB15_RBD}
 idx_bb = which(df_binding[["WA1_RBD"]]==1 &
                df_binding[["BA1_RBD"]]==1 & 
@@ -495,7 +599,7 @@ idx_bb = which(df_binding[["WA1_RBD"]]==1 &
 # 106
 length(idx_bb) 
 
-### broadly neutralizing
+## broadly neutralizing
 # Neut for "Authentic_Virus_Neut" AND
 # <1000 for IC50_WA1/BA1/XBB15
 idx_bn = which(df_binding[["Authentic_Virus_Neut"]]=="Neut" &
@@ -505,13 +609,13 @@ idx_bn = which(df_binding[["Authentic_Virus_Neut"]]=="Neut" &
 # 10
 length(idx_bn) 
 
-### WA1-only binder
+## WA1-only binder
 idx_wa1_only_binder = which(df_binding[["WA1_Spike"]]==1 &
                             df_binding[["BA1_Spike"]]==0)
 # 85
 length(idx_wa1_only_binder) 
 
-### WA1-only neutralizer
+## WA1-only neutralizer
 idx_wa1_only_neut = which(df_binding[["Authentic_Virus_Neut"]]=="Neut" &
                           df_binding[["IC50_WA1_D614G"]]<1000 & 
                           df_binding[["IC50_BA1"]]>=1000 &
@@ -528,6 +632,7 @@ vec_cell_type_uniq_pbmc = c("MBC_PBMC_d0", "PB_d8", "MBC_PBMC_d121")
 vec_cell_type_uniq_ln_color = c("dodgerblue2", "forestgreen", "plum2", "darkgoldenrod2")
 vec_cell_type_uniq_pbmc_color = c("plum2", "firebrick2", "plum2")
 
+# text labels
 vec_cell_type_uniq_ln_label = paste0("d57 ", c("GCB", "LNPC", "MBC", "Naive"))
 vec_cell_type_uniq_pbmc_label = c("d0 MBC", "d8 PB", "d121 MBC")
 
@@ -551,6 +656,7 @@ for (cur_type in c("bb", "bn", "wa1_b", "wa1_n")) {
         cur_title = "WA1-neutraling only"
     }
     
+    # current set of mAbs
     cur_vec_mabs = df_binding[["HC_ID"]][cur_idx_1]
 
     stopifnot(all(cur_vec_mabs %in% db_all[[col_expressed_id]]))
@@ -561,8 +667,10 @@ for (cur_type in c("bb", "bn", "wa1_b", "wa1_n")) {
     stopifnot(!any(is.na(cur_idx_2)))
     stopifnot(all.equal(cur_vec_mabs, db[[col_expressed_id]][cur_idx_2]))
     
+    # clones to which the current set of mAbs belong
     cur_vec_mabs_clone_id = db[[col_clone_id]][cur_idx_2]
     
+    # separate data.frame for LN and PBMC
     cur_db_ln = db[db[[col_clone_id]] %in% cur_vec_mabs_clone_id &
                    db[[col_tissue]]=="LN", ]
     cur_db_pbmc = db[db[[col_clone_id]] %in% cur_vec_mabs_clone_id &
@@ -570,7 +678,7 @@ for (cur_type in c("bb", "bn", "wa1_b", "wa1_n")) {
     stopifnot(nrow(cur_db_ln)+nrow(cur_db_pbmc) == 
               sum(db[[col_clone_id]] %in% cur_vec_mabs_clone_id))
     
-    # initialize
+    # initialize placeholders for LN and PBMC
     cur_vec_clone_count_ln = rep(NA, length(vec_cell_type_uniq_ln))
     names(cur_vec_clone_count_ln) = vec_cell_type_uniq_ln
     cur_vec_clone_perc_ln = cur_vec_clone_count_ln
@@ -579,17 +687,19 @@ for (cur_type in c("bb", "bn", "wa1_b", "wa1_n")) {
     names(cur_vec_clone_count_pbmc) = vec_cell_type_uniq_pbmc
     cur_vec_clone_perc_pbmc = cur_vec_clone_count_pbmc
     
+    # LN
     if (nrow(cur_db_ln)>0) {
 
         cur_clone_info_ln = summarize_clone(db=cur_db_ln, col_clone=col_clone_id,
                                             col_vec=c(col_comp_tp), order_by_size="none")
-
+        
+        # for each cell type, count the number of clones in which that cell type was present
         for (cur_cell_type in vec_cell_type_uniq_ln) {
             if (cur_cell_type %in% colnames(cur_clone_info_ln)) {
                 cur_vec_clone_count_ln[cur_cell_type] = sum(cur_clone_info_ln[[cur_cell_type]]>0)
             }
         }
-        
+        # convert to percentage of clones
         cur_vec_clone_perc_ln = cur_vec_clone_count_ln/nrow(cur_clone_info_ln)*100
         
         cat("LN\n")
@@ -601,17 +711,19 @@ for (cur_type in c("bb", "bn", "wa1_b", "wa1_n")) {
         
     }
     
+    # PBMC
     if (nrow(cur_db_pbmc)>0) {
         
         cur_clone_info_pbmc = summarize_clone(db=cur_db_pbmc, col_clone=col_clone_id,
                                               col_vec=c(col_comp_tp), order_by_size="none")
-
+        
+        # for each cell type, count the number of clones in which that cell type was present
         for (cur_cell_type in vec_cell_type_uniq_pbmc) {
             if (cur_cell_type %in% colnames(cur_clone_info_pbmc)) {
                 cur_vec_clone_count_pbmc[cur_cell_type] = sum(cur_clone_info_pbmc[[cur_cell_type]]>0)
             }
         }
-        
+        # convert to percentage of clones
         cur_vec_clone_perc_pbmc = cur_vec_clone_count_pbmc/nrow(cur_clone_info_pbmc)*100
         
         cat("PBMC\n")
@@ -622,13 +734,15 @@ for (cur_type in c("bb", "bn", "wa1_b", "wa1_n")) {
         cat(cur_type, ": not detected in PBMC\n")
     }
     
+    # vis setup
     # +1 for space in between LN and PBMC
     vec_x_pos = 1:(length(vec_cell_type_uniq_ln)+length(vec_cell_type_uniq_pbmc)+1)
     vec_x_label = c(vec_cell_type_uniq_ln_label, "", vec_cell_type_uniq_pbmc_label)
     vec_x_color = c(vec_cell_type_uniq_ln_color, NA, vec_cell_type_uniq_pbmc_color)
     vec_y_val = c(cur_vec_clone_perc_ln, NA, cur_vec_clone_perc_pbmc)
     
-    cur_plot_fn = paste0("fig_xx_", cur_type, ".pdf")
+    # vis
+    cur_plot_fn = paste0("fig_S6_", cur_type, ".pdf")
     pdf(cur_plot_fn, width=5, height=5)
     par(mar=c(6,4.5,1,1)) # BLTR
     plot(x=vec_x_pos, y=vec_y_val,
@@ -639,118 +753,6 @@ for (cur_type in c("bb", "bn", "wa1_b", "wa1_n")) {
     axis(side=1, at=vec_x_pos, labels=vec_x_label, tick=F, las=2)
     dev.off()
 }
+
 ```
-
-
-# UMAPs
-
-#### Prep
-
-```{r}
-# UMAP coordinates
-gex_umap_zz = gzfile(fn_umap,'rt')
-gex_umap = read.table(gex_umap_zz, header=T, sep="\t", stringsAsFactors=F)
-close(gex_umap_zz)
-
-# match up cells in `db` with those in `gex_umap`
-idx = match(db[["cell_id"]], gex_umap[["cell_id"]])
-
-bool_idx_non_na = !is.na(idx)
-
-# sanity check
-stopifnot(all.equal( db[["cell_id"]][bool_idx_non_na],
-                     gex_umap[["cell_id"]][ idx[bool_idx_non_na] ] ))
-
-# create a column indicating whether a cell in `gex_umap` belonged to 
-# a S+ B cell clone
-gex_umap[[col_s_pos_clone]] = FALSE
-gex_umap[[col_s_pos_clone]][ idx[bool_idx_non_na] ] = TRUE
-
-gex_umap[[col_donor]] = factor(gex_umap[[col_donor]], levels=DONORS)
-
-# the ordering of the points in a ggplot2 plot depends on 
-# the ordering of the rows of the input data
-# later rows are plotted later
-
-# put $s_pos_clone TRUE after FALSE
-# order() not affected by factor levels
-# with order(), FALSE comes before TRUE
-gex_umap = gex_umap[order(gex_umap[[col_s_pos_clone]]), ]
-
-gex_umap[[col_s_pos_clone]] = factor(gex_umap[[col_s_pos_clone]],
-                                     levels=c(TRUE, FALSE))
-
-# visualization configs
-
-vec_gg_anno_col = c("GC"="dodgerblue2",
-                    "LNPC"="forestgreen",
-                    "MBC"="plum2",
-                    "Naive"="darkgoldenrod2")
-
-stopifnot(all(gex_umap[[col_anno]] %in% names(vec_gg_anno_col)))
-
-umap_xlim = range(gex_umap[["umap_x"]]) * c(1.05, 1.05)
-umap_ylim = range(gex_umap[["umap_y"]]) * c(1.05, 1.05)
-
-g_size_s_pos = 1.25
-```
-
-
-#### Fig 2A (right) - S+
-
-```{r}
-g = ggplot(data=gex_umap,
-           mapping=aes(x=umap_x, y=umap_y)) +
-    geom_point(aes(color=s_pos_clone, size=s_pos_clone), 
-               alpha=0.7, stroke=0) +
-    scale_color_manual(values=c("TRUE"="red", "FALSE"="gray")) +
-    scale_size_manual(values=c("TRUE"=g_size_s_pos, "FALSE"=1)) +
-    xlim(umap_xlim) +
-    ylim(umap_ylim) +
-    theme_bw() +
-    theme(axis.title.x=element_blank(),   
-          axis.text.x=element_blank(),    
-          axis.ticks.x=element_blank()) + 
-    theme(axis.title.y=element_blank(),   
-          axis.text.y=element_blank(),    
-          axis.ticks.y=element_blank()) + 
-    theme(legend.position="none") + 
-    theme(panel.grid.major=element_blank()) + 
-    theme(panel.grid.minor=element_blank())  
-
-fn = "fig_2A_right.png"
-ggsave(filename=fn, plot=g, bg="transparent", 
-       device="png", width=4, height=4, units="in")
-rm(g)
-```
-
-
-#### Fig S2E - S+, by participant
-
-```{r}
-g = ggplot(data=gex_umap,
-           mapping=aes(x=umap_x, y=umap_y)) +
-    geom_point(aes(color=.data[[col_s_pos_clone]], size=.data[[col_s_pos_clone]]), 
-               alpha=0.7, stroke=0) +
-    scale_color_manual(values=c("TRUE"="red", "FALSE"="gray")) +
-    scale_size_manual(values=c("TRUE"=1.2, "FALSE"=0.8)) +
-    facet_wrap(facets=vars(.data[[col_donor]]), nrow=2) +
-    theme_bw() +
-    theme(strip.background=element_rect(fill="transparent"),
-          strip.text=element_text(size=13)) +
-    theme(axis.title.x=element_blank(),   
-          axis.text.x=element_blank(),    
-          axis.ticks.x=element_blank()) + 
-    theme(axis.title.y=element_blank(),   
-          axis.text.y=element_blank(),    
-          axis.ticks.y=element_blank()) + 
-    theme(legend.position="none") + 
-    theme(panel.grid.major=element_blank()) 
-
-fn = "fig_S2E.png"
-ggsave(filename=fn, plot=g, bg="transparent", 
-       device="png", width=9, height=6, units="in")
-rm(g)
-```
-
 
