@@ -16,12 +16,14 @@ The scripts assume the following directory structure:
 
 ```
 .
+├── assets
+│   ├── WU382_malladi_et_al_sci_imm_2025_gex_b_cell_umap.tsv.gz
+│   └── WU382_malladi_et_al_sci_imm_2025_mab_binding.tsv.gz
 ├── c2b2
 │   ├── bcr_alluvial.R
 │   └── etc.
 ├── WU382_malladi_et_al_sci_imm_2025_gex_all_cells.h5ad
 ├── WU382_malladi_et_al_sci_imm_2025_gex_b_cells.h5ad
-├── WU382_malladi_et_al_sci_imm_2025_gex_b_cell_umap.tsv.gz
 ├── WU382_malladi_et_al_sci_imm_2025_bcr_heavy.tsv.gz
 ```
 
