@@ -6,6 +6,6 @@
 
 * [Code](./nature_2023) | [Data](https://doi.org/10.5281/zenodo.7719030) | [Article](https://doi.org/10.1038/s41586-023-06025-4) | Alsoussi & Malladi et al., *Nature*, 2023
 
-* [Code](./sci_imm_2025) | [Data](https://doi.org/10.5281/zenodo.14872873) | [Article](TBD) | Malladi & Jaiswal et al., *Science Immunology*, 2025
+* [Code](./sci_imm_2025) | [Data](https://doi.org/10.5281/zenodo.14872873) | [Article](https://www.science.org/doi/10.1126/sciimmunol.adu4107) | Malladi & Jaiswal et al., *Science Immunology*, 2025
 
 
