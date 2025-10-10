@@ -1,6 +1,6 @@
 # Code associated with Malladi & Jaiswal et al., *Science Immunology*, 2025
 
-These scripts are for reproducing the figures and analyses that were based on NGS data in [Malladi & Jaiswal et al., *Science Immunology*, 2025](TBD).
+These scripts are for reproducing the figures and analyses that were based on NGS data in [Malladi & Jaiswal et al., *Science Immunology*, 2025](https://www.science.org/doi/10.1126/sciimmunol.adu4107).
 
 The JupyterLab notebook [`analysis_gex.ipynb`](./analysis_gex.ipynb) with its output [html](./analysis_gex.html) cover gene expression analysis.
 
