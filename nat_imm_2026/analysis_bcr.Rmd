@@ -1,0 +1,663 @@
+---
+title: "Matz et al., *Nature Immunology*, 2026 (repertoire)"
+output:
+  html_document:
+    df_print: paged
+---
+
+Author: Julian Q. Zhou
+
+Docker container: `julianqz/wu_pub:r_4.1.0`
+
+Visualizations are outputted as pdfs or pngs.
+
+# Load packages & helper functions
+
+```{r}
+# modify the next line to set working directory accordingly
+# setwd("[insert_your_working_directory_here]")
+
+# summarize_clone
+source("./c2b2/bcr_clone_info.R")
+
+# circos_clonal_overlap
+source("./c2b2/bcr_clonal_overlap_circos_v2.R")
+
+# barplot_2
+source("./c2b2/vis_barplot.R")
+```
+
+```{r}
+library(tibble)
+library(ggplot2)
+
+library(ape)
+library(ggtree)
+```
+
+```{r}
+versions::installed.versions(c("ggplot2", "circlize", "ape", "ggtree"))
+```
+
+
+# Setup
+
+```{r}
+### filenames
+fn_db_hc = "WU397_matz_et_al_nat_imm_2026_bcr_heavy.tsv.gz"
+fn_db_lc = "WU397_matz_et_al_nat_imm_2026_bcr_light.tsv.gz"
+fn_umap = "WU397_matz_et_al_nat_imm_2026_gex_b_cell_umap.tsv.gz"
+
+### column names
+
+col_comp = "compartment"
+col_tp = "timepoint_2" # timepoint in days
+col_tp_w = "timepoint_2_wk" # timepoint in weeks
+
+# [compartment]_[timepoint]
+col_comp_tp = "compartment_timepoint_2"
+
+# B cell clonal lineage ID
+col_clone_id = "clone_id"
+
+# ID of expressed mAb
+col_exp_id = "expressed_id"
+
+# "pos" if an expressed mAb was tested positive for HA binding via ELISA
+col_ha_binary = "ha_binding_binary" 
+
+# TRUE if clone contains HA+
+col_ha_pos_clone = "ha_pos_clone"
+
+# transcriptomics-based cluster annotation
+col_anno = "anno_leiden_0.95"
+
+# replacement and silent mutation frequency
+col_mf = "nuc_RS_freq_1_312"
+
+col_donor = "donor"
+col_sample = "sample"
+col_seq_id = "sequence_id"
+col_cell_id = "cell_id"
+col_iso = "isotype"
+col_tissue = "tissue"
+
+### participants
+DONORS = paste0("397-", c("06","17","28","29","05","09", "22"))
+```
+
+
+# Load BCR data
+
+```{r}
+# db_all contains heavy chains from all clones regardless of S specificity
+db_all_hc_zz = gzfile(fn_db_hc,'rt')
+db_all = read.table(db_all_hc_zz, header=T, sep="\t", stringsAsFactors=F)
+close(db_all_hc_zz)
+
+# clones containing HA-positive expressed mAbs
+vec_clones_ha_pos = unique(db_all[[col_clone_id]][db_all[[col_ha_binary]]=="pos"])
+
+# Subset to HA+ clones
+db = db_all[db_all[[col_clone_id]] %in% vec_clones_ha_pos, ]
+rm(db_all)
+
+# light chain
+db_all_lc_zz = gzfile(fn_db_lc,'rt')
+db_all_lc = read.table(db_all_lc_zz, header=T, sep="\t", stringsAsFactors=F)
+close(db_all_lc_zz)
+```
+
+```{r}
+# Recalculate SHM frequency to avoid numerical problems affecting $nuc_RS_freq_1_312
+# that arise from writing and reading tsv's
+
+# E.g. a "0.013108614" could become "0.013108615" after being exported and read back in
+
+# Doing so ensures that the exact p-values reported in the paper can be reproduced
+db[[col_mf]] = db[["nuc_RS_1_312"]] / db[["nuc_denom_1_312"]]
+db_all_lc[[col_mf]] = db_all_lc[["nuc_RS_1_312"]] / db_all_lc[["nuc_denom_1_312"]]
+```
+
+
+# Clone-level summary
+
+First, we create a `data.frame` in which each row represents a clone, and columns
+tabulate the number of sequences in a compartment and in a compartment-timepoint
+combination.
+
+```{r}
+clone_info = summarize_clone(db=db, col_clone=col_clone_id, 
+                             col_vec=c(col_comp, col_comp_tp),
+                             order_by_size="none")
+
+# Extract participant ID from clone ID, which has the format [donor]@[clone]
+clone_info[[col_donor]] = sapply(clone_info[[col_clone_id]],
+                                 function(s){strsplit(s, "@")[[1]][1]})
+```
+
+
+# Circos plots for clonal overlap
+
+`circos_clonal_overlap_v2` produces a circos plot, and prints out (i) the number and
+percentage of clones with clonal overlap, and (ii) the number of sequences.
+
+Starting with the arc at the 12 o'clock position and going clockwise, the identities of 
+the arcs correspond to the rows in the printed table from top to bottom.
+
+### How to read the circos plots
+
+* An arc represents BCR sequences from a B cell compartment or 
+compartment-timepoint combination
+* The length of an arc corresponds to the number of BCR sequences 
+represented by the arc
+* Chords connect clonally related sequences
+* The width of a chord corresponds to the size of the clone represented 
+by the chord
+* Chords are coloured based on whether there's "overlap"
+* Overlap can be defined as overlap between compartments, between 
+compartment-timepoint combinations, etc.
+
+#### Fig 3a - clonal overlap between GC B cell compartment and w1 PB
+
+The percentages reported in Fig 3a were extracted from `fig_3a_info.txt` produced below.
+
+```{r}
+### prep
+
+vec_sectors_comp_tp = c("PB_d8", "GC")
+vec_sectors_type_comp_tp = c("PB","GC")
+vec_sectors_color_comp_tp = c("PB"="firebrick2", "GC"="dodgerblue2")
+
+vec_color_overlap = c("GC@PB"="purple")
+color_rest = "gray40"
+
+vec_gaps_comp_tp = rep(4, length(vec_sectors_comp_tp))
+
+col_sector_comp_tp = "tmp_circos_col"
+
+
+fn_sink = "fig_3a_info.txt"
+sink(fn_sink)
+
+for (d in DONORS) {
+    cat("\n", d, "\n")
+    # subset to current donor
+    d_db = db[db[[col_donor]]==d, ]
+    d_clone_info = clone_info[clone_info[[col_clone_id]] %in% d_db[[col_clone_id]], ]
+    
+    # tmp column
+    # this is a workaround for GCB having timepoints combined and PB having timepoint specified
+    # make a copy of the $compartment column
+    # GC remains GC, without timepoint specified
+    d_db[[col_sector_comp_tp]] = d_db[[col_comp]]
+    # change value for PB to PB_d8 (i.e. specifying timepoint)
+    d_db[[col_sector_comp_tp]][which(d_db[[col_comp_tp]]=="PB_d8")] = "PB_d8"
+    
+    d_fn = paste0("fig_3a_", d, ".pdf")
+    pdf(d_fn, width=5, height=5)
+    
+    circos_clonal_overlap_v2(vec_sectors=vec_sectors_comp_tp, 
+                             vec_sectors_type=vec_sectors_type_comp_tp, 
+                             vec_sectors_color=vec_sectors_color_comp_tp, 
+                             vec_gaps=vec_gaps_comp_tp,  
+                             col_sector=col_sector_comp_tp, 
+                             col_clone_id=col_clone_id, 
+                             df_seq_data=d_db, 
+                             df_clone_info=d_clone_info, 
+                             color_overlap=vec_color_overlap,
+                             color_rest=color_rest,
+                             color_mono=FALSE)
+    
+    dev.off()
+}
+
+sink()
+```
+
+
+# Clone-wise SHM frequency comparisons between compartment-timepoint combinations
+
+*The code-generated plots from below were prototypes based on which the published 
+versions were generated using GraphPad Prism v10.*
+
+##### How to read the clone-wise SHM frequency plots
+
+* Each line corresponds to a B cell clone
+* Each end of the line corresponds to the SHM frequency of a clonal 
+member in a given compartment or compartment-timepoint combination that
+was expressed as a mAb and verified to be HA-positive via ELISA
+
+
+#### Fig 3b - wk 1 PB vs. w26 GC B cells
+
+```{r}
+# clones spanning wk 1 PB and wk 26 GC B cell compartments
+vec_cl = clone_info[[col_clone_id]][ clone_info[["PB_d8"]]>0 & clone_info[["GC_d180"]]>0  ]
+
+# placeholder
+vec_cols_df_mab_shm = c(col_clone_id, 
+                        "mab_id_PB_d8", "mab_id_GC_d180",
+                        "shm_hc_PB_d8", "shm_lc_PB_d8", 
+                        "shm_hc_GC_d180", "shm_lc_GC_d180")
+df_mab_shm = data.frame(matrix(NA, nrow=length(vec_cl), ncol=length(vec_cols_df_mab_shm)))
+colnames(df_mab_shm) = vec_cols_df_mab_shm
+
+# fill in values
+df_mab_shm[[col_clone_id]] = vec_cl
+
+for (i_cl in 1:nrow(df_mab_shm)) {
+    cur_cl = df_mab_shm[[col_clone_id]][i_cl]
+    
+    # locate heavy chain; wrt db
+    idx_hc_pb_d8 = which(db[[col_clone_id]]==cur_cl &
+                         db[[col_exp_id]]!="" & # expressed mAb
+                         db[[col_comp_tp]]=="PB_d8")
+    stopifnot(length(idx_hc_pb_d8)==1)
+    
+    idx_hc_gc_d180 = which(db[[col_clone_id]]==cur_cl &
+                         db[[col_exp_id]]!="" & # expressed mAb
+                         db[[col_comp_tp]]=="GC_d180")
+    stopifnot(length(idx_hc_gc_d180)==1)
+    
+    # locate corresponding light chain; wrt db_all_lc
+    idx_lc_pb_d8 = which(db_all_lc[[col_cell_id]]==db[[col_cell_id]][idx_hc_pb_d8])
+    stopifnot(length(idx_lc_pb_d8)==1)
+    
+    idx_lc_gc_d180 = which(db_all_lc[[col_cell_id]]==db[[col_cell_id]][idx_hc_gc_d180])
+    stopifnot(length(idx_lc_gc_d180)==1)
+    
+    # mAb ID; derive from HC expressed ID by removing ".HC" at the end
+    df_mab_shm[["mab_id_PB_d8"]][i_cl] = strsplit(db[[col_exp_id]][idx_hc_pb_d8], ".HC")[[1]][1]
+    df_mab_shm[["mab_id_GC_d180"]][i_cl] = strsplit(db[[col_exp_id]][idx_hc_gc_d180], ".HC")[[1]][1]
+    # heavy chain SHM frequency
+    df_mab_shm[["shm_hc_PB_d8"]][i_cl] = db[[col_mf]][idx_hc_pb_d8]
+    df_mab_shm[["shm_hc_GC_d180"]][i_cl] = db[[col_mf]][idx_hc_gc_d180]
+    # light chain SHM frequency
+    df_mab_shm[["shm_lc_PB_d8"]][i_cl] = db_all_lc[[col_mf]][idx_lc_pb_d8]
+    df_mab_shm[["shm_lc_GC_d180"]][i_cl] = db_all_lc[[col_mf]][idx_lc_gc_d180]
+}
+
+# expect no NA left
+stopifnot(!any(is.na(df_mab_shm)))
+
+# vis, heavy chain
+
+ymax_common = max(df_mab_shm[, grepl(pattern="shm_", x=colnames(df_mab_shm))])*1.05
+
+pdf("fig_3b.pdf", width=10, height=5)
+par(mfrow=c(1,2), mar=c(5,5,1,1))
+
+plot(x=0, y=0, xlim=c(0,3), ylim=c(0, ymax_common), xaxt="n", col=NA,
+     xlab="", ylab="IGHV nucleotide mutation frequency")
+axis(side=1, at=c(1,2), labels=c("w1 PB", "w26 GC"))
+for (i_cl in 1:nrow(df_mab_shm)) {
+    points(x=c(1,2), y=c(df_mab_shm[["shm_hc_PB_d8"]][i_cl],
+                         df_mab_shm[["shm_hc_GC_d180"]][i_cl]),
+           col=c("firebrick2", "dodgerblue2"))
+    lines(x=c(1,2), y=c(df_mab_shm[["shm_hc_PB_d8"]][i_cl],
+                         df_mab_shm[["shm_hc_GC_d180"]][i_cl]),
+           col=c("plum2"))
+}
+
+# vis, light chain
+plot(x=0, y=0, xlim=c(0,3), ylim=c(0, ymax_common), xaxt="n", col=NA,
+     xlab="", ylab="IGK/LV nucleotide mutation frequency")
+axis(side=1, at=c(1,2), labels=c("w1 PB", "w26 GC"))
+
+for (i_cl in 1:nrow(df_mab_shm)) {
+    points(x=c(1,2), y=c(df_mab_shm[["shm_lc_PB_d8"]][i_cl],
+                         df_mab_shm[["shm_lc_GC_d180"]][i_cl]),
+           col=c("firebrick2", "dodgerblue2"))
+    lines(x=c(1,2), y=c(df_mab_shm[["shm_lc_PB_d8"]][i_cl],
+                         df_mab_shm[["shm_lc_GC_d180"]][i_cl]),
+           col=c("plum2"))
+}
+
+dev.off()
+
+# the reported p-values were from tests carried out in Prism
+# below is code for running the tests in R
+wilcox.test(x=df_mab_shm[["shm_hc_PB_d8"]], y=df_mab_shm[["shm_hc_GC_d180"]], paired=T)
+wilcox.test(x=df_mab_shm[["shm_lc_PB_d8"]], y=df_mab_shm[["shm_lc_GC_d180"]], paired=T)
+
+
+```
+
+# Isotype
+
+#### Fig 3e
+
+```{r}
+# vis config
+uniq_iso = paste0("IGH", c("G","A","M","D","E"))
+# order should match uniq_iso in order for barplot_2 to work properly
+uniq_iso_colors = c("IGHG"="hotpink",
+                    "IGHA"="forestgreen", 
+                    "IGHM"="dodgerblue2", 
+                    "IGHD"="darkgoldenrod2", 
+                    "IGHE"="purple")
+
+# subset data for vis
+vec_cl_gc = clone_info[[col_clone_id]][ clone_info[["GC"]]>0 ]
+clone_info_iso = clone_info[clone_info[[col_clone_id]] %in% vec_cl_gc, ]
+db_iso = db[db[[col_clone_id]] %in% vec_cl_gc, ]
+    
+# out of all cells vs. GC B cells 
+for (cur_mode in c("all_cells", "gcb_only")) {
+    
+    if (cur_mode=="gcb_only") {
+        # subset to GC B cells only
+        db_iso = db_iso[which(db_iso[[col_comp]]=="GC"), ]
+        
+        # only need to do this if subsetting to gcb_only
+        clone_info_iso = summarize_clone(db=db_iso, col_clone=col_clone_id,
+                                         col_vec=c(col_iso), order_by_size="none")
+        clone_info_iso[[col_donor]] = sapply(clone_info_iso[[col_clone_id]],
+                                             function(x){strsplit(x, "@")[[1]][1]}, USE.NAMES=F)
+    }
+    
+    # calculate isotype distribution
+    iso_cell_by_donor = t(sapply(DONORS,
+                                 function(d){
+                                     return(sapply(uniq_iso, 
+                                                   function(iso){
+                                                       sum(db_iso[[col_iso]]==iso & db_iso[[col_donor]]==d)
+                                                   }))
+                                 }))
+    print(iso_cell_by_donor)
+    
+    # convert from counts to percentages
+    iso_cell_by_donor_perc = t(apply(iso_cell_by_donor, 1, function(x){ x/sum(x)*100 }))
+    # expect all 100 (or NaN)
+    rowSums(iso_cell_by_donor_perc)    
+    print(round(iso_cell_by_donor_perc, 1))
+    
+    # vis
+    fn = paste0("fig_3e_", cur_mode, ".pdf")
+    pdf(fn, width=6, height=5)
+    par(mar=c(5,4.5,0,0)) # BLTR
+    barplot_2(tab=iso_cell_by_donor_perc, 
+              vec_ylim=c(0,105), col_bar=uniq_iso_colors, ylab="%")
+    dev.off()
+}
+
+
+
+```
+
+# UMAPs
+
+#### Prep
+
+```{r}
+# UMAP coordinates
+gex_umap_zz = gzfile(paste0("./assets/", fn_umap),'rt')
+gex_umap = read.table(gex_umap_zz, header=T, sep="\t", stringsAsFactors=F)
+close(gex_umap_zz)
+
+# simplify timepoint: d180 and d181 both treated as d180
+gex_umap[[col_tp]] = gex_umap[["timepoint"]]
+gex_umap[[col_tp]][gex_umap[[col_tp]]=="d181"] = "d180"
+
+# factorize timepoint
+gex_umap[[col_tp]] = factor(gex_umap[[col_tp]], levels=paste0("d", c(0,8,15,57,121,180)))
+
+# match up cells in `db` with those in `gex_umap`
+idx = match(db[[col_cell_id]], gex_umap[[col_cell_id]])
+
+bool_idx_non_na = !is.na(idx)
+
+# sanity check
+stopifnot(all.equal( db[[col_cell_id]][bool_idx_non_na],
+                     gex_umap[[col_cell_id]][ idx[bool_idx_non_na] ] ))
+
+# create a column indicating whether a cell in `gex_umap` belonged to 
+# a HA+ B cell clone
+gex_umap[[col_ha_pos_clone]] = FALSE
+gex_umap[[col_ha_pos_clone]][ idx[bool_idx_non_na] ] = TRUE
+
+gex_umap[[col_donor]] = factor(gex_umap[[col_donor]], levels=DONORS)
+
+# the ordering of the points in a ggplot2 plot depends on 
+# the ordering of the rows of the input data
+# later rows are plotted later
+
+# put $ha_pos_clone TRUE after FALSE
+# order() not affected by factor levels
+# with order(), FALSE comes before TRUE
+gex_umap = gex_umap[order(gex_umap[[col_ha_pos_clone]]), ]
+
+gex_umap[[col_ha_pos_clone]] = factor(gex_umap[[col_ha_pos_clone]],
+                                     levels=c(TRUE, FALSE))
+
+# visualization configs
+vec_gg_anno_col = c("ABC"="mediumspringgreen",
+                    "GC"="dodgerblue2",
+                    "LNPC"="forestgreen",
+                    "MBC"="plum2",
+                    "Naive"="darkgoldenrod2",
+                    "PB"="firebrick2")
+
+stopifnot(all(gex_umap[[col_anno]] %in% names(vec_gg_anno_col)))
+```
+
+#### Fig 2c
+
+```{r}
+g = ggplot(data=gex_umap,
+           mapping=aes(x=umap_x, y=umap_y)) +
+    geom_point(aes_string(color=col_anno), 
+               alpha=0.7, stroke=0, size=1) +
+    scale_color_manual(values=vec_gg_anno_col) +
+    facet_grid(rows=vars(.data[[col_donor]]), cols=vars(.data[[col_tp]])) +
+    theme_bw() +
+    theme(strip.background=element_rect(fill="transparent"),
+          strip.text=element_text(size=13)) +
+    theme(axis.title.x=element_blank(),   # no x-axis title
+          axis.text.x=element_blank(),    # no x-axis tick label
+          axis.ticks.x=element_blank()) + # no x-axis ticks 
+    theme(axis.title.y=element_blank(),   # no y-axis title
+          axis.text.y=element_blank(),    # no y-axis tick label
+          axis.ticks.y=element_blank()) + # no y-axis ticks 
+    theme(legend.position="none") + # no legend
+    theme(panel.grid.major=element_blank()) #+ # remove major grid
+
+fn = "fig_2c.png"
+ggsave(filename=fn, plot=g, bg="transparent", 
+       device="png", 
+       width=15, height=12, units="in")  
+```
+
+#### Fig 2d & Extended Data Fig 3e
+
+```{r}
+g = ggplot(data=gex_umap,
+           mapping=aes(x=umap_x, y=umap_y)) +
+    geom_point(aes(color=.data[[col_ha_pos_clone]], size=.data[[col_ha_pos_clone]]), 
+               alpha=0.7, stroke=0) +
+    scale_color_manual(values=c("TRUE"="red", "FALSE"="gray")) +
+    scale_size_manual(values=c("TRUE"=1, "FALSE"=0.8)) +
+    facet_grid(rows=vars(.data[[col_donor]]), cols=vars(.data[[col_tp]])) +
+    theme_bw() +
+    theme(strip.background=element_rect(fill="transparent"),
+          strip.text=element_text(size=13)) +
+    theme(axis.title.x=element_blank(),   # no x-axis title
+          axis.text.x=element_blank(),    # no x-axis tick label
+          axis.ticks.x=element_blank()) + # no x-axis ticks 
+    theme(axis.title.y=element_blank(),   # no y-axis title
+          axis.text.y=element_blank(),    # no y-axis tick label
+          axis.ticks.y=element_blank()) + # no y-axis ticks 
+    theme(legend.position="none") + # no legend
+    theme(panel.grid.major=element_blank()) # remove major grid
+
+fn = "fig_2d_ed_fig_3e.png"
+ggsave(filename=fn, plot=g, bg="transparent", 
+       device="png",
+       width=15, height=12, units="in")
+```
+
+# Phylogenetic trees
+
+#### Extended Data Fig 4c
+
+```{r}
+# files containing tree topology 
+# each file corresponds to a HA+ B cell clone
+vec_tree_files = list.files(path="./assets/igphyml_output", pattern="_tree_HLP.txt")
+vec_tree_clones = sapply(vec_tree_files, function(s){ strsplit(s, ".fasta")[[1]][1] })
+
+# sanity check that all the clones are in `db`
+stopifnot(all(vec_tree_clones %in% db[[col_clone_id]]))
+
+# timepoint conversion: days to weeks
+vec_tp_convert = c("d0"="w0", "d8"="w1", "d15"="w2", "d57"="w8", "d121"="w17", "d180"="w26")
+db[[col_tp_w]] = vec_tp_convert[db[[col_tp]]]
+
+# loop through the clones
+for (i_cl in 1:length(vec_tree_clones)) {
+    
+    cur_cl = vec_tree_clones[i_cl]
+    cur_cl_split = strsplit(cur_cl, "@")[[1]]
+    # donor ID
+    cur_d = cur_cl_split[1]
+    
+    cur_fn_tree = vec_tree_files[i_cl]
+    cur_fn_plot = paste0("ed_fig_4c_", i_cl, "_", cur_cl, ".pdf")
+    
+    ### read in tree
+    
+    cur_newick = read.tree(file=paste0("./assets/igphyml_output/", cur_fn_tree))
+    # phylo
+    class(cur_newick)
+    
+    # number of tips
+    cur_n_tips = length(cur_newick[["tip.label"]])
+    
+    
+    ### metadata
+    
+    cur_tibble = as_tibble(cur_newick)
+    # tbl_tree
+    class(cur_tibble)
+    
+    # extract sequence_id to use as anchor to obtain metadata from `db`
+    cur_tip_ids = sapply(cur_tibble[["label"]], function(s){
+        if (!is.na(s)) {
+            # if _GERM_
+            if (grepl(pattern="_GERM_", x=s)) {
+                return("Germline")
+            } else {
+                # from: 397-05_s26@CCGTACTTCCTATTCA-1_contig_2_397-05_s26_LN_IGHA_GC_d15_NA
+                    # to: 397-05_s26@CCGTACTTCCTATTCA-1_contig_2
+                    ss = strsplit(x=s, split=paste0("_", cur_d, "_"))[[1]][1]
+                    return(ss)
+            }
+        } else {
+            # NA remains NA
+            return(NA)
+        }
+    })
+    
+    # match against db
+    cur_idx = match(cur_tip_ids, db[[col_seq_id]])
+    # sanity check
+    # NAs in cur_idx correspond to NAs or _GERM_ in $label
+    # +1 for _GERM_
+    stopifnot(sum(is.na(cur_idx)) == sum(is.na(cur_tibble[["label"]]))+1)
+    
+    bool_cur_idx_no_na = !is.na(cur_idx)
+    # sanity check
+    stopifnot(all.equal(cur_tip_ids[bool_cur_idx_no_na], 
+                        db[[col_seq_id]][cur_idx[bool_cur_idx_no_na]],
+                        check.attributes=F))
+    
+    # meta columns
+    cur_meta_cols = c(col_donor, col_sample, col_tissue, col_iso, 
+                      col_comp, col_tp, col_tp_w, col_ha_binary)
+    stopifnot(all(cur_meta_cols %in% colnames(db)))
+    
+    cur_meta = db[cur_idx[bool_cur_idx_no_na], cur_meta_cols]
+    
+    for (cur_col in cur_meta_cols) {
+        cur_tibble[[cur_col]] = NA
+        cur_tibble[[cur_col]][bool_cur_idx_no_na] = cur_meta[[cur_col]]
+    }
+    
+    # aesthetic mapping
+    # colour: compartment (PB, GC, LNPC)
+    # shape: isotype 
+    
+    vec_map_fill = c("PB"="firebrick2", "GC"="dodgerblue2", "LNPC"="forestgreen",
+                         "MBC_blood"="plum2", "MBC_LN"="purple3", "ABC"="seagreen2")
+        
+    # 23 diamond
+    # 21 circle
+    # 22 square
+    vec_map_shape = c("IGHA"=23, "IGHG"=21, "IGHM"=22)
+    
+    stopifnot(all(names(vec_map_fill) %in% db[[col_comp]]))
+        
+    stopifnot(all(names(vec_map_shape) %in% db[[col_iso]]))
+    
+    # factorize for ggplot2
+    cur_tibble[[col_comp]] = factor(cur_tibble[[col_comp]], levels=names(vec_map_fill))
+    cur_tibble[[col_iso]] = factor(cur_tibble[[col_iso]], levels=names(vec_map_shape)) 
+    
+    head(cur_tibble)
+    
+    # back to phylo
+    cur_phylo = as.phylo(cur_tibble)
+    
+    
+    ### visualize
+
+    # There's a row with all NA's
+    # This corresponds to the germline
+    # Its presence triggers a warning:
+    # "Removed 1 rows containing missing values (geom_point_g_gtree)"
+    # This warning can be safely ignored
+    
+    # tip symbol and label sizes by trial and error
+    size_tippoint = c(7,4) 
+    size_text_lab = c(3,2)
+    height_pdf=5
+    
+    p_base = ggtree(cur_phylo)
+    
+    p_comp_tp = p_base %<+% cur_tibble +
+        # `stroke` controls width of outline of shape 
+        # `size` controls area of inside of shape
+        geom_tippoint(aes(shape=isotype, 
+                          fill=compartment),
+                      size=size_tippoint[i_cl], stroke=0, col="transparent") +
+        # `na.translate=F` hides the NA level in legend
+        # `name` controls title of respective legend
+        scale_shape_manual(
+            values=vec_map_shape[names(vec_map_shape) %in% cur_tibble[[col_iso]]], 
+            na.translate=F, name="Isotype") +
+        scale_fill_manual(
+            values=vec_map_fill[names(vec_map_fill) %in% cur_tibble[[col_comp]]], 
+            na.translate=F, name="Compartment") +
+        # guides(size=F) + # hide legend for `size`
+        # override aes as default doesn't appear to be working
+        # order specified position of each of multiple legends (`order` should be outside `override.aes`)
+        guides(fill=guide_legend(
+            override.aes=list(size=5, 
+                              color=vec_map_fill[names(vec_map_fill) %in% cur_tibble[[col_comp]]]),
+            order=2),
+            shape=guide_legend(
+                override.aes=list(size=4, stroke=1, color="black", fill="transparent",
+                                  shape=vec_map_shape[names(vec_map_shape) %in% cur_tibble[[col_iso]]]),
+                order=1)
+        ) +
+        geom_tiplab(aes(label=timepoint_2_wk), hjust=-0.8, size=size_text_lab[i_cl]) + 
+        geom_treescale(x=0, y=cur_n_tips*0.9) 
+    
+    
+    ggsave(filename=cur_fn_plot, plot=p_comp_tp, device="pdf", width=5, height=height_pdf)
+    
+    rm(p_base, p_comp_tp, cur_tibble, cur_meta, cur_phylo)
+}
+```
+
