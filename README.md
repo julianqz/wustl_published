@@ -8,4 +8,6 @@
 
 * [Code](./sci_imm_2025) | [Data](https://doi.org/10.5281/zenodo.14872873) | [Article](https://www.science.org/doi/10.1126/sciimmunol.adu4107) | Malladi & Jaiswal et al., *Science Immunology*, 2025
 
+* [Code](./nat_imm_2026) | [Data](https://doi.org/10.5281/zenodo.13929847) | [Article](TODO: updte URL) | Matz et al., *Nature Immunology*, 2026
+
 
