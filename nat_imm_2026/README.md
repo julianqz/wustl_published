@@ -1,6 +1,6 @@
 # Code associated with Matz et al., *Nature Immunology*, 2026
 
-These scripts are for reproducing the figures and analyses that were based on NGS data in [Matz et al., *Nature Immunology*, 2026](TODO: update URL).
+These scripts are for reproducing the figures and analyses that were based on NGS data in [Matz et al., *Nature Immunology*, 2026](https://doi.org/10.1038/s41590-026-02569-5).
 
 The JupyterLab notebook [`analysis_gex.ipynb`](./analysis_gex.ipynb) with its output [html](./analysis_gex.html) cover gene expression analysis.
 
